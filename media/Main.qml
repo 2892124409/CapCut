@@ -152,8 +152,12 @@ Window {
         id: fileDialog
         title: "请选择媒体文件"
         nameFilters: [
-            "视频文件 (*.mp4 *.avi *.mkv *.mov *.wmv *.flv *.webm)",
-            "图片文件 (*.jpg *.jpeg *.png *.bmp *.gif *.tiff *.tif *.webp)",
+            // 1. 【新增】将这个放在第一位，作为默认选项
+            "媒体文件 (*.mp4 *.avi *.mkv *.mov *.wmv *.flv *.webm *.m4v *.3gp *.ts *.jpg *.jpeg *.png *.bmp *.gif *.tiff *.tif *.webp *.ico *.svg *.mp3 *.wav *.flac *.aac *.ogg *.m4a *.wma *.opus *.aiff *.ape)",
+            
+            // 2. 原有的分类选项
+            "视频文件 (*.mp4 *.avi *.mkv *.mov *.wmv *.flv *.webm *.m4v *.3gp *.ts)",
+            "图片文件 (*.jpg *.jpeg *.png *.bmp *.gif *.tiff *.tif *.webp *.ico *.svg)",
             "音频文件 (*.mp3 *.wav *.flac *.aac *.ogg *.m4a *.wma *.opus *.aiff *.ape)",
             "所有文件 (*)"
         ]
