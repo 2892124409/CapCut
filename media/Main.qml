@@ -129,7 +129,8 @@ Window {
             Text {
                 id: fileTypeText
                 text: fileManager.currentFileType === "video" ? "🎥 视频" : 
-                      fileManager.currentFileType === "image" ? "🖼️ 图片" : ""
+                      fileManager.currentFileType === "image" ? "🖼️ 图片" : 
+                      fileManager.currentFileType === "audio" ? "🎵 音频" : ""
                 color: "#aaa"
                 font.pixelSize: 12
                 anchors.verticalCenter: parent.verticalCenter
@@ -153,6 +154,7 @@ Window {
         nameFilters: [
             "视频文件 (*.mp4 *.avi *.mkv *.mov *.wmv *.flv *.webm)",
             "图片文件 (*.jpg *.jpeg *.png *.bmp *.gif *.tiff *.tif *.webp)",
+            "音频文件 (*.mp3 *.wav *.flac *.aac *.ogg *.m4a *.wma *.opus *.aiff *.ape)",
             "所有文件 (*)"
         ]
         onAccepted: {
@@ -165,6 +167,8 @@ Window {
                 myPlayer.play(filePath)
             } else if (fileManager.currentFileType === "image") {
                 myPlayer.loadImage(filePath)
+            } else if (fileManager.currentFileType === "audio") {
+                myPlayer.play(filePath)
             }
         }
     }
@@ -354,9 +358,9 @@ Window {
                 height: 40
                 spacing: 15
 
-                // 1. 选择视频文件按钮 (最左边)
+                // 1. 选择媒体文件按钮 (最左边)
                 Button {
-                    text: "📁 选择视频文件"
+                    text: "📁 选择媒体文件"
                     font.bold: true
                     font.pixelSize: 14
                     width: 140

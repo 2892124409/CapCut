@@ -112,6 +112,7 @@ void VideoPlayer::stop()
     m_audioStreamIndex = -1;
     m_totalDuration = 0;
     m_currentPosition = 0;
+    m_isAudioOnly = false;
 }
 
 void VideoPlayer::play(QString filePath)
@@ -149,6 +150,17 @@ void VideoPlayer::play(QString filePath)
         }
     }
 
+    // 判断是否为纯音频文件
+    m_isAudioOnly = (m_videoStreamIndex == -1 && m_audioStreamIndex != -1);
+    if (m_isAudioOnly) {
+        m_currentMediaType = "audio";
+        emit currentMediaTypeChanged();
+        qDebug() << "检测到纯音频文件";
+    } else {
+        m_currentMediaType = "video";
+        emit currentMediaTypeChanged();
+    }
+
     // 初始化多线程解码器
     if (m_decoderWorker)
     {
@@ -182,8 +194,8 @@ void VideoPlayer::play(QString filePath)
         }
     }
 
-    // 启动播放
-    if (m_videoStreamIndex != -1)
+    // 启动播放 - 修改启动条件：只要有视频流或音频流就启动
+    if (m_videoStreamIndex != -1 || m_audioStreamIndex != -1)
     {
         m_isFirstFrame = true;
         m_isPaused = false;
@@ -248,38 +260,45 @@ void VideoPlayer::seek(qint64 ms)
             m_audioDecoder->flushBuffers();
 
         // 2. 【精准 Seek 核心】循环丢帧直到追上目标时间
-        AVPacket *packet = av_packet_alloc();
-        bool seekSuccess = false;
-        int maxRead = 200; // 防止死循环
+        // 如果是纯音频模式，直接更新位置即可
+        if (m_isAudioOnly) {
+            m_currentPosition.store(ms);
+            emit positionChanged();
+        } else {
+            // 视频模式需要精确 seek
+            AVPacket *packet = av_packet_alloc();
+            bool seekSuccess = false;
+            int maxRead = 200; // 防止死循环
 
-        while (av_read_frame(m_formatCtx, packet) >= 0 && maxRead-- > 0)
-        {
-            if (packet->stream_index == m_videoStreamIndex && m_videoDecoder)
+            while (av_read_frame(m_formatCtx, packet) >= 0 && maxRead-- > 0)
             {
-                if (m_videoDecoder->decodePacket(packet))
+                if (packet->stream_index == m_videoStreamIndex && m_videoDecoder)
                 {
-                    // 获取解码后的图像和时间戳
-                    QImage decodedImage = m_videoDecoder->getCurrentImage();
-                    qint64 decodedPts = m_videoDecoder->getCurrentPts();
-
-                    if (decodedPts >= ms)
+                    if (m_videoDecoder->decodePacket(packet))
                     {
+                        // 获取解码后的图像和时间戳
+                        QImage decodedImage = m_videoDecoder->getCurrentImage();
+                        qint64 decodedPts = m_videoDecoder->getCurrentPts();
+
+                        if (decodedPts >= ms)
                         {
-                            QWriteLocker locker(&m_imageLock);
-                            m_currentImage = decodedImage;
-                            m_currentPosition.store(decodedPts);
+                            {
+                                QWriteLocker locker(&m_imageLock);
+                                m_currentImage = decodedImage;
+                                m_currentPosition.store(decodedPts);
+                            }
+                            update();
+                            seekSuccess = true;
+                            break;
                         }
-                        update();
-                        seekSuccess = true;
-                        break;
                     }
                 }
+                av_packet_unref(packet);
+                if (seekSuccess)
+                    break;
             }
-            av_packet_unref(packet);
-            if (seekSuccess)
-                break;
+            av_packet_free(&packet);
         }
-        av_packet_free(&packet);
 
         // 3. 更新状态 - 修复音画同步问题
         m_clockOffset.store(ms);
@@ -373,15 +392,31 @@ void VideoPlayer::onTimerFire()
         }
     }
 
-    // 【关键】检测视频播放完成
+    // 【关键】检测播放完成 - 支持纯音频模式
     if (!frameProcessed && !m_isPaused.load())
     {
-        // 视频播放完成，自动暂停并更新状态
+        // 如果是纯音频模式，需要手动更新进度
+        if (m_isAudioOnly) {
+            qint64 elapsed = m_masterClock.elapsed() + m_clockOffset.load();
+            if (elapsed < m_totalDuration.load()) {
+                // 更新进度
+                m_currentPosition.store(elapsed);
+                emit positionChanged();
+                update(); // 触发界面更新
+                
+                // 继续定时器
+                m_timer->start(16); // 约60fps更新频率
+                av_packet_free(&packet);
+                return;
+            }
+        }
+        
+        // 播放完成，自动暂停并更新状态
         m_timer->stop();
         m_isPaused = true;
         emit pausedChanged();
 
-        // 确保位置显示为视频结束位置
+        // 确保位置显示为结束位置
         if (m_currentPosition.load() < m_totalDuration.load())
         {
             m_currentPosition.store(m_totalDuration.load());
@@ -394,6 +429,14 @@ void VideoPlayer::onTimerFire()
 
 QSGNode *VideoPlayer::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *)
 {
+    // 如果是纯音频模式，显示音频图标或空白
+    if (m_isAudioOnly) {
+        if (oldNode) {
+            delete oldNode;
+        }
+        return nullptr; // 纯音频不显示图像
+    }
+    
     QImage img;
     QSize imgSize;
     {
@@ -522,6 +565,7 @@ void VideoPlayer::loadImage(QString filePath)
         QWriteLocker locker(&m_imageLock);
         m_currentImage = m_imageDecoder->getCurrentImage();
         m_currentMediaType = "image";
+        m_isAudioOnly = false;
         
         // 重置图片变换参数
         m_zoomLevel = 1.0;

@@ -117,8 +117,11 @@ private:
     // 图片查看相关
     qreal m_zoomLevel = 1.0;
     qreal m_rotationAngle = 0.0;
-    QString m_currentMediaType = "none"; // "video", "image", "none"
+    QString m_currentMediaType = "none"; // "video", "image", "audio", "none"
     QMatrix4x4 m_transformMatrix;
+    
+    // 纯音频播放相关
+    bool m_isAudioOnly = false; // 是否为纯音频文件
 
     // 私有方法
     void updateTransformMatrix();

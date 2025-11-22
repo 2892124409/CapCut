@@ -16,6 +16,7 @@ void FileManager::scanFolder(const QString &folderPath)
     m_currentFolder = folderPath;
     m_videoFiles = getVideoFilesInFolder(folderPath);
     m_imageFiles = getImageFilesInFolder(folderPath);
+    m_audioFiles = getAudioFilesInFolder(folderPath);
     updateMediaFiles();
     m_currentIndex = -1;
     m_currentFile.clear();
@@ -24,6 +25,7 @@ void FileManager::scanFolder(const QString &folderPath)
     emit currentFolderChanged();
     emit videoFilesChanged();
     emit imageFilesChanged();
+    emit audioFilesChanged();
     emit mediaFilesChanged();
     emit currentIndexChanged();
     emit hasPreviousChanged();
@@ -31,7 +33,7 @@ void FileManager::scanFolder(const QString &folderPath)
     emit currentFileChanged();
     emit currentFileTypeChanged();
 
-    qDebug() << "Scanned folder:" << folderPath << "Found" << m_videoFiles.size() << "video files and" << m_imageFiles.size() << "image files";
+    qDebug() << "Scanned folder:" << folderPath << "Found" << m_videoFiles.size() << "video files," << m_imageFiles.size() << "image files," << m_audioFiles.size() << "audio files";
 }
 
 void FileManager::scanFolderForFile(const QString &filePath)
@@ -127,13 +129,35 @@ QStringList FileManager::getImageFilesInFolder(const QString &folderPath)
     return imageFiles;
 }
 
+QStringList FileManager::getAudioFilesInFolder(const QString &folderPath)
+{
+    QStringList audioFiles;
+    QDir dir(folderPath);
+
+    // 支持的音频文件扩展名
+    QStringList audioExtensions = {
+        "*.mp3", "*.wav", "*.flac", "*.aac", "*.ogg",
+        "*.m4a", "*.wma", "*.opus", "*.aiff", "*.ape"
+    };
+
+    // 获取所有音频文件
+    QStringList files = dir.entryList(audioExtensions, QDir::Files | QDir::Readable, QDir::Name);
+    
+    for (const QString &file : files) {
+        audioFiles.append(dir.absoluteFilePath(file));
+    }
+
+    return audioFiles;
+}
+
 void FileManager::updateMediaFiles()
 {
     m_mediaFiles.clear();
     
-    // 合并视频和图片文件，按文件名排序
+    // 合并视频、图片和音频文件，按文件名排序
     m_mediaFiles.append(m_videoFiles);
     m_mediaFiles.append(m_imageFiles);
+    m_mediaFiles.append(m_audioFiles);
     
     // 按文件名排序
     std::sort(m_mediaFiles.begin(), m_mediaFiles.end());
@@ -153,6 +177,8 @@ void FileManager::setCurrentFile(const QString &filePath)
             m_currentFileType = "video";
         } else if (m_imageFiles.contains(filePath)) {
             m_currentFileType = "image";
+        } else if (m_audioFiles.contains(filePath)) {
+            m_currentFileType = "audio";
         } else {
             m_currentFileType = "unknown";
         }
