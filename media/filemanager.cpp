@@ -159,8 +159,6 @@ void FileManager::updateMediaFiles()
     m_mediaFiles.append(m_imageFiles);
     m_mediaFiles.append(m_audioFiles);
     
-    // 按文件名排序
-    std::sort(m_mediaFiles.begin(), m_mediaFiles.end());
 }
 
 void FileManager::setCurrentFile(const QString &filePath)
