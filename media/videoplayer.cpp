@@ -112,7 +112,7 @@ void VideoPlayer::play(QString filePath)
         AVStream *stream = m_formatCtx->streams[i];
         if (stream->disposition & AV_DISPOSITION_ATTACHED_PIC)
         {
-            qDebug() << "忽略封面图片流 (Attached Picture):" << i;
+            // qDebug() << "忽略封面图片流";
             continue;
         }
         if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
@@ -133,7 +133,6 @@ void VideoPlayer::play(QString filePath)
     {
         m_currentMediaType = "audio";
         emit currentMediaTypeChanged();
-        qDebug() << "检测到纯音频文件";
     }
     else
     {
@@ -204,8 +203,7 @@ void VideoPlayer::resume()
 
 void VideoPlayer::seek(qint64 ms)
 {
-    // 【修复】Seek前先停止定时器，防止逻辑冲突
-    m_timer->stop();
+    m_timer->stop(); // Seek 期间暂停定时器
 
     if (!m_formatCtx)
         return;
@@ -262,16 +260,17 @@ void VideoPlayer::seek(qint64 ms)
         m_currentPosition.store(ms);
         m_audioPosition.store(ms);
         emit positionChanged();
-        m_masterClock.restart();
-        m_isFirstFrame.store(false);
 
-        // 恢复定时器
+        m_masterClock.restart();
+        // 【核心修复】将 m_isFirstFrame 设为 true
+        // 这告诉 onTimerFire：“不要试图追赶 Seek 消耗的时间，从现在开始重新计​​时”
+        m_isFirstFrame.store(true);
+
         if (!m_isPaused.load())
             m_timer->start(0);
     }
     else
     {
-        // Seek 失败也要恢复定时器
         if (!m_isPaused.load())
             m_timer->start(0);
     }
@@ -283,6 +282,7 @@ void VideoPlayer::onTimerFire()
     int loopCount = 0;
     bool frameProcessed = false;
 
+    // 流控：防止音频写入阻塞
     if (m_isAudioOnly && m_audioDecoder)
     {
         if (m_audioDecoder->bytesFree() < 16384)
@@ -336,13 +336,17 @@ void VideoPlayer::onTimerFire()
                 qint64 elapsed = m_masterClock.elapsed() + m_clockOffset.load();
                 double diff = decodedPts - elapsed;
 
+                // 如果是首帧（包括Seek后的第一帧），重置时钟
                 if (m_isFirstFrame.load())
                 {
                     m_isFirstFrame = false;
                     diff = 0;
                     m_masterClock.restart();
-                    m_clockOffset = 0;
+                    m_clockOffset = 0; // 注意：这里 offset 其实已经不重要了，因为 diff=0，下一次 elapsed 会很小
+                    // 更正：offset 应该保持为当前 PTS，否则进度条会跳回 0
+                    m_clockOffset.store(decodedPts);
                 }
+
                 update();
                 av_packet_unref(packet);
                 frameProcessed = true;
@@ -350,6 +354,7 @@ void VideoPlayer::onTimerFire()
                 if (m_isPaused.load())
                     break;
 
+                // 正常的同步逻辑
                 if (diff > 0)
                     m_timer->start(qMin(diff, 33.0));
                 else
@@ -397,7 +402,7 @@ void VideoPlayer::onTimerFire()
     av_packet_free(&packet);
 }
 
-// 保持不变的辅助函数
+// 辅助函数保持不变
 void VideoPlayer::setVolume(float volume)
 {
     if (m_audioDecoder)

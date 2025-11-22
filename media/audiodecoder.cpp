@@ -63,6 +63,7 @@ bool AudioDecoder::init(AVFormatContext *formatCtx, int audioStreamIndex)
         return false;
     m_frame.reset(frame, "AVFrame");
 
+    // 配置音频输出格式
     int targetSampleRate = 48000;
     QAudioFormat format;
     format.setSampleRate(targetSampleRate);
@@ -76,9 +77,12 @@ bool AudioDecoder::init(AVFormatContext *formatCtx, int audioStreamIndex)
         targetSampleRate = format.sampleRate();
     }
 
-    m_audioSink = new QAudioSink(device, format, this);
-    // 0.5秒缓冲区
-    m_audioSink->setBufferSize(targetSampleRate * 2 * 2 * 0.5);
+    // 【关键】保存最终协商的格式，供后续重建使用
+    m_outputFormat = format;
+
+    // 创建音频输出
+    m_audioSink = new QAudioSink(device, m_outputFormat, this);
+    m_audioSink->setBufferSize(targetSampleRate * 2 * 2 * 0.5); // 0.5秒缓冲区
     m_audioSink->setVolume(m_volume);
 
     m_audioDevice = m_audioSink->start();
@@ -88,6 +92,7 @@ bool AudioDecoder::init(AVFormatContext *formatCtx, int audioStreamIndex)
         return false;
     }
 
+    // 初始化重采样器
     AVChannelLayout out_ch_layout = AV_CHANNEL_LAYOUT_STEREO;
     SwrContext *swrCtx = nullptr;
     swr_alloc_set_opts2(&swrCtx,
@@ -100,23 +105,53 @@ bool AudioDecoder::init(AVFormatContext *formatCtx, int audioStreamIndex)
     m_swrCtx.reset(swrCtx, "SwrContext");
     swr_init(m_swrCtx.get());
 
-    qDebug() << "音频解码器初始化成功";
+    qDebug() << "音频解码器初始化成功，采样率:" << targetSampleRate;
+    return true;
+}
+
+// 【新增】重建音频输出函数，专门用于 Flush 之后恢复
+bool AudioDecoder::recreateAudioOutput()
+{
+    if (m_audioSink)
+    {
+        m_audioSink->stop();
+        delete m_audioSink;
+        m_audioSink = nullptr;
+    }
+    m_audioDevice = nullptr;
+
+    QAudioDevice device = QMediaDevices::defaultAudioOutput();
+    m_audioSink = new QAudioSink(device, m_outputFormat, this);
+
+    // 保持 0.5 秒缓冲区
+    int bytesPerSec = m_outputFormat.sampleRate() * 2 * 2;
+    m_audioSink->setBufferSize(bytesPerSec * 0.5);
+    m_audioSink->setVolume(m_volume);
+
+    m_audioDevice = m_audioSink->start();
+    if (!m_audioDevice)
+    {
+        qDebug() << "重建音频设备失败";
+        return false;
+    }
     return true;
 }
 
 void AudioDecoder::decodePacket(AVPacket *packet)
 {
-    // 【修复】扩大锁范围，防止在 flushBuffers 重置设备时还在写入
-    QMutexLocker locker(&m_mutex);
+    if (!m_codecCtx || !m_audioDevice)
+        return;
 
-    if (!m_codecCtx || !m_audioDevice || m_isPaused)
+    // 细粒度锁，防止与 flushBuffers 冲突
+    QMutexLocker locker(&m_mutex);
+    if (m_isPaused)
         return;
 
     if (avcodec_send_packet(m_codecCtx.get(), packet) == 0)
     {
         while (avcodec_receive_frame(m_codecCtx.get(), m_frame.get()) == 0)
         {
-            int dst_rate = m_audioSink->format().sampleRate();
+            int dst_rate = m_outputFormat.sampleRate(); // 使用保存的采样率
             if (dst_rate <= 0)
                 dst_rate = 44100;
 
@@ -151,6 +186,7 @@ void AudioDecoder::decodePacket(AVPacket *packet)
 
             if (frame_count > 0 && m_audioDevice)
             {
+                // 这里如果 device 正在重建中，m_audioDevice 可能变化，但有 mutex 保护
                 m_audioDevice->write((const char *)buffer, frame_count * 2 * 2);
             }
 
@@ -234,15 +270,18 @@ void AudioDecoder::resume()
 void AudioDecoder::flushBuffers()
 {
     QMutexLocker locker(&m_mutex);
+
+    // 1. 刷新 FFmpeg 缓冲区
     if (m_codecCtx)
         avcodec_flush_buffers(m_codecCtx.get());
 
-    // 【核心修复】使用 stop() + start() 代替 reset()
-    // reset() 在某些情况下会导致底层 Crash
+    // 2. 【核心修复】直接销毁并重建 QAudioSink
+    // 这是解决 Windows 下 reset() 崩溃、stop() 死锁最稳妥的方法
+    // 虽然有微小的性能开销，但对于拖动操作来说可以忽略不计
     if (m_audioSink)
     {
-        m_audioSink->stop();                  // 停止播放并清空
-        m_audioDevice = m_audioSink->start(); // 重新启动
+        recreateAudioOutput();
     }
-    qDebug() << "音频缓冲区已刷新 (Stop+Start)";
+
+    qDebug() << "音频缓冲区已刷新 (Recreated)";
 }
