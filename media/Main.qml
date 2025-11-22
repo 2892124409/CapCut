@@ -180,7 +180,10 @@ Window {
     // 底部控制条
     Rectangle {
         id: controls
-        height: 90 // 进一步减少高度，避免遮挡
+
+
+
+        height: myPlayer.currentMediaType === "image" ? 60 : 90
         color: "#1a1a1a"
         anchors.bottom: parent.bottom
         anchors.left: parent.left
@@ -204,6 +207,9 @@ Window {
                 id: progressBarContainer
                 width: parent.width
                 height: 30
+
+                // 【修改点 2】如果是图片模式，直接隐藏进度条
+                visible: myPlayer.currentMediaType !== "image"
 
                 // 进度条背景
                 Rectangle {
@@ -414,12 +420,18 @@ Window {
                             verticalAlignment: Text.AlignVCenter
                         }
                         focusPolicy: Qt.NoFocus
-                        onClicked: {
-                            var prevFile = fileManager.getPreviousFile()
-                            if (prevFile) {
-                                myPlayer.play(prevFile)
-                            }
-                        }
+                        // ... inside prevButton ...
+onClicked: {
+    var prevFile = fileManager.getPreviousFile()
+    if (prevFile) {
+        // 【修改点】根据文件类型判断调用哪个接口
+        if (fileManager.currentFileType === "image") {
+            myPlayer.loadImage(prevFile)
+        } else {
+            myPlayer.play(prevFile) // 视频或音频
+        }
+    }
+}
                     }
 
                     // 3. 播放/暂停按钮 (居中)
@@ -462,12 +474,18 @@ Window {
                             verticalAlignment: Text.AlignVCenter
                         }
                         focusPolicy: Qt.NoFocus
-                        onClicked: {
-                            var nextFile = fileManager.getNextFile()
-                            if (nextFile) {
-                                myPlayer.play(nextFile)
-                            }
-                        }
+                        // ... inside nextButton ...
+onClicked: {
+    var nextFile = fileManager.getNextFile()
+    if (nextFile) {
+        // 【修改点】同样增加类型判断
+        if (fileManager.currentFileType === "image") {
+            myPlayer.loadImage(nextFile)
+        } else {
+            myPlayer.play(nextFile)
+        }
+    }
+}
                     }
                 }
 
