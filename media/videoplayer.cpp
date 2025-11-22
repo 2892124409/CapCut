@@ -633,7 +633,7 @@ void VideoPlayer::renderImage(QSGSimpleTextureNode* node, const QRectF& rect)
     transform.scale(scale, scale);
     
     // 计算变换后的尺寸
-    QVector3D transformedSize = transform * QVector3D(imgSize.width(), imgSize.height(), 0);
+    QVector3D transformedSize = transform.map(QVector3D(imgSize.width(), imgSize.height(), 0));
     w = qAbs(transformedSize.x());
     h = qAbs(transformedSize.y());
     
