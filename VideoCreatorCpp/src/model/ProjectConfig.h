@@ -4,79 +4,150 @@
 #include <string>
 #include <vector>
 
-namespace VideoCreator {
+namespace VideoCreator
+{
 
-// 资源类型枚举
-enum class ResourceType {
-    IMAGE,
-    VIDEO,
-    AUDIO
-};
+    // 场景类型枚举
+    enum class SceneType
+    {
+        IMAGE_SCENE,
+        TRANSITION
+    };
 
-// 特效类型枚举
-enum class EffectType {
-    NONE,
-    FADE_IN,
-    FADE_OUT,
-    ZOOM,
-    PAN,
-    ROTATE
-};
+    // 转场类型枚举
+    enum class TransitionType
+    {
+        CROSSFADE,
+        WIPE,
+        SLIDE
+    };
 
-// 资源配置
-struct ResourceConfig {
-    std::string path;
-    ResourceType type;
-    double start_time;  // 开始时间（秒）
-    double duration;    // 持续时间（秒）
-    double volume;      // 音量（0.0-1.0）
-};
+    // 图片配置
+    struct ImageConfig
+    {
+        std::string path;      // 图片文件路径
+        int x = 0;             // X坐标
+        int y = 0;             // Y坐标
+        double scale = 1.0;    // 缩放比例
+        double rotation = 0.0; // 旋转角度
+    };
 
-// 特效配置
-struct EffectConfig {
-    EffectType type;
-    double start_time;  // 开始时间（秒）
-    double duration;    // 持续时间（秒）
-    std::string params; // 特效参数
-};
+    // 音频配置
+    struct AudioConfig
+    {
+        std::string path;          // 音频文件路径
+        double volume = 1.0;       // 音量
+        double start_offset = 0.0; // 开始偏移时间
+    };
 
-// 场景配置
-struct SceneConfig {
-    std::string name;
-    double duration;    // 场景持续时间（秒）
-    std::vector<ResourceConfig> resources;
-    std::vector<EffectConfig> effects;
-};
+    // 资源配置
+    struct ResourcesConfig
+    {
+        ImageConfig image; // 图片配置
+        AudioConfig audio; // 音频配置
+    };
 
-// 输出配置
-struct OutputConfig {
-    std::string output_path;
-    int width;
-    int height;
-    int frame_rate;
-    int video_bitrate;  // 视频码率（bps）
-    int audio_bitrate;  // 音频码率（bps）
-    std::string video_codec;
-    std::string audio_codec;
-};
+    // Ken Burns特效配置
+    struct KenBurnsEffect
+    {
+        bool enabled = false;     // 是否启用
+        double start_scale = 1.0; // 开始缩放
+        double end_scale = 1.0;   // 结束缩放
+        int start_x = 0;          // 开始X坐标
+        int start_y = 0;          // 开始Y坐标
+        int end_x = 0;            // 结束X坐标
+        int end_y = 0;            // 结束Y坐标
+    };
 
-// 项目全局配置
-struct ProjectConfig {
-    std::string project_name;
-    OutputConfig output;
-    std::vector<SceneConfig> scenes;
-    
-    // 默认构造函数
-    ProjectConfig() {
-        output.width = 1920;
-        output.height = 1080;
-        output.frame_rate = 30;
-        output.video_bitrate = 4000000; // 4Mbps
-        output.audio_bitrate = 128000;  // 128kbps
-        output.video_codec = "libx264";
-        output.audio_codec = "aac";
-    }
-};
+    // 音量混合特效配置
+    struct VolumeMixEffect
+    {
+        bool enabled = false;  // 是否启用
+        double fade_in = 0.0;  // 淡入时间
+        double fade_out = 0.0; // 淡出时间
+    };
+
+    // 特效配置
+    struct EffectsConfig
+    {
+        KenBurnsEffect ken_burns;   // Ken Burns特效
+        VolumeMixEffect volume_mix; // 音量混合特效
+    };
+
+    // 场景配置
+    struct SceneConfig
+    {
+        int id = 0;                              // 场景ID
+        SceneType type = SceneType::IMAGE_SCENE; // 场景类型
+        double duration = 0.0;                   // 持续时间
+        ResourcesConfig resources;               // 资源配置
+        EffectsConfig effects;                   // 特效配置
+
+        // 转场相关字段
+        TransitionType transition_type = TransitionType::CROSSFADE; // 转场类型
+        int from_scene = 0;                                         // 起始场景ID
+        int to_scene = 0;                                           // 目标场景ID
+    };
+
+    // 音频标准化配置
+    struct AudioNormalizationConfig
+    {
+        bool enabled = false;        // 是否启用
+        double target_level = -16.0; // 目标音量级别(dB)
+    };
+
+    // 视频编码配置
+    struct VideoEncodingConfig
+    {
+        std::string codec = "libx264"; // 编码器
+        std::string bitrate = "5000k"; // 比特率
+        std::string preset = "medium"; // 预设
+        int crf = 23;                  // 质量因子
+    };
+
+    // 音频编码配置
+    struct AudioEncodingConfig
+    {
+        std::string codec = "aac";    // 编码器
+        std::string bitrate = "192k"; // 比特率
+        int channels = 2;             // 声道数
+    };
+
+    // 全局效果配置
+    struct GlobalEffectsConfig
+    {
+        AudioNormalizationConfig audio_normalization; // 音频标准化
+        VideoEncodingConfig video_encoding;           // 视频编码
+        AudioEncodingConfig audio_encoding;           // 音频编码
+    };
+
+    // 项目基本信息配置
+    struct ProjectInfoConfig
+    {
+        std::string name;                         // 项目名称
+        std::string output_path;                  // 输出路径
+        int width = 1920;                         // 视频宽度
+        int height = 1080;                        // 视频高度
+        int fps = 30;                             // 帧率
+        std::string background_color = "#000000"; // 背景颜色
+    };
+
+    // 项目全局配置
+    struct ProjectConfig
+    {
+        ProjectInfoConfig project;          // 项目基本信息
+        std::vector<SceneConfig> scenes;    // 场景列表
+        GlobalEffectsConfig global_effects; // 全局效果配置
+
+        // 默认构造函数
+        ProjectConfig()
+        {
+            project.width = 1920;
+            project.height = 1080;
+            project.fps = 30;
+            project.background_color = "#000000";
+        }
+    };
 
 } // namespace VideoCreator
 

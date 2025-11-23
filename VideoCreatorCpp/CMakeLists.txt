@@ -33,6 +33,12 @@ qt_add_executable(VideoCreatorCpp
     src/model/ProjectConfig.h
     src/engine/RenderEngine.cpp
     src/engine/RenderEngine.h
+    src/decoder/ImageDecoder.cpp
+    src/decoder/ImageDecoder.h
+    src/decoder/AudioDecoder.cpp
+    src/decoder/AudioDecoder.h
+    src/filter/EffectProcessor.cpp
+    src/filter/EffectProcessor.h
     src/ffmpeg_utils/AvFrameWrapper.h
     src/ffmpeg_utils/AvPacketWrapper.h
     src/ffmpeg_utils/FFmpegHeaders.h
@@ -55,6 +61,8 @@ target_include_directories(VideoCreatorCpp PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/model
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ffmpeg_utils
     ${CMAKE_CURRENT_SOURCE_DIR}/src/engine
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/decoder
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/filter
     ${CMAKE_CURRENT_SOURCE_DIR}/src/common
 )
 
@@ -68,3 +76,33 @@ file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/bin/output)
 message(STATUS "VideoCreatorCpp独立构建配置完成")
 message(STATUS "Qt路径: ${Qt6_DIR}")
 message(STATUS "FFmpeg路径: ${FFMPEG_DIR}")
+
+# 复制FFmpeg DLL文件到输出目录（Windows平台）
+if(WIN32)
+    # 检查FFmpeg bin目录是否存在
+    if(EXISTS "${FFMPEG_DIR}/bin/")
+        # 查找FFmpeg bin目录下的所有DLL文件
+        file(GLOB FFMPEG_DLLS "${FFMPEG_DIR}/bin/*.dll")
+        
+        if(FFMPEG_DLLS)
+            message(STATUS "找到FFmpeg DLL文件:")
+            foreach(DLL_FILE ${FFMPEG_DLLS})
+                message(STATUS "  - ${DLL_FILE}")
+            endforeach()
+            
+            # 复制DLL文件到输出目录
+            foreach(DLL_FILE ${FFMPEG_DLLS})
+                file(COPY ${DLL_FILE} DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+            endforeach()
+            
+            list(LENGTH FFMPEG_DLLS DLL_COUNT)
+            message(STATUS "已复制 ${DLL_COUNT} 个FFmpeg DLL文件到输出目录: ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
+        else()
+            message(WARNING "FFmpeg bin目录存在，但未找到DLL文件: ${FFMPEG_DIR}/bin/")
+            message(WARNING "当前FFmpeg可能只包含静态库，需要获取包含DLL的版本")
+        endif()
+    else()
+        message(STATUS "FFmpeg bin目录不存在: ${FFMPEG_DIR}/bin/")
+        message(STATUS "当前使用的是静态库版本，不需要复制DLL文件")
+    endif()
+endif()

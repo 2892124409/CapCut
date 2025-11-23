@@ -1,4 +1,7 @@
 #include "RenderEngine.h"
+#include "decoder/ImageDecoder.h"
+#include "decoder/AudioDecoder.h"
+#include "filter/EffectProcessor.h"
 #include "ffmpeg_utils/AvFrameWrapper.h"
 #include "ffmpeg_utils/AvPacketWrapper.h"
 #include <iostream>
@@ -8,7 +11,8 @@ namespace VideoCreator
 {
 
     RenderEngine::RenderEngine()
-        : m_outputContext(nullptr), m_videoCodecContext(nullptr), m_audioCodecContext(nullptr), m_videoStream(nullptr), m_audioStream(nullptr), m_frameCount(0), m_progress(0)
+        : m_outputContext(nullptr), m_videoCodecContext(nullptr), m_audioCodecContext(nullptr),
+          m_videoStream(nullptr), m_audioStream(nullptr), m_frameCount(0), m_progress(0)
     {
     }
 
@@ -80,7 +84,7 @@ namespace VideoCreator
     {
         // 创建输出格式上下文
         if (avformat_alloc_output_context2(&m_outputContext, nullptr, nullptr,
-                                           m_config.output.output_path.c_str()) < 0)
+                                           m_config.project.output_path.c_str()) < 0)
         {
             m_errorString = "创建输出上下文失败";
             return false;
@@ -98,10 +102,10 @@ namespace VideoCreator
     bool RenderEngine::createVideoStream()
     {
         // 查找视频编码器
-        const AVCodec *videoCodec = avcodec_find_encoder_by_name(m_config.output.video_codec.c_str());
+        const AVCodec *videoCodec = avcodec_find_encoder_by_name(m_config.global_effects.video_encoding.codec.c_str());
         if (!videoCodec)
         {
-            m_errorString = "找不到视频编码器: " + m_config.output.video_codec;
+            m_errorString = "找不到视频编码器: " + m_config.global_effects.video_encoding.codec;
             return false;
         }
 
@@ -124,13 +128,22 @@ namespace VideoCreator
         }
 
         // 配置视频编码器参数
-        m_videoCodecContext->width = m_config.output.width;
-        m_videoCodecContext->height = m_config.output.height;
-        m_videoCodecContext->time_base = {1, m_config.output.frame_rate};
-        m_videoCodecContext->framerate = {m_config.output.frame_rate, 1};
+        m_videoCodecContext->width = m_config.project.width;
+        m_videoCodecContext->height = m_config.project.height;
+        m_videoCodecContext->time_base = {1, m_config.project.fps};
+        m_videoCodecContext->framerate = {m_config.project.fps, 1};
         m_videoCodecContext->pix_fmt = AV_PIX_FMT_YUV420P;
-        m_videoCodecContext->bit_rate = m_config.output.video_bitrate;
+
+        // 解析比特率字符串
+        std::string bitrateStr = m_config.global_effects.video_encoding.bitrate;
+        int bitrate = std::stoi(bitrateStr.substr(0, bitrateStr.length() - 1)) * 1000;
+        m_videoCodecContext->bit_rate = bitrate;
+
         m_videoCodecContext->gop_size = 12;
+
+        // 设置编码参数
+        av_opt_set(m_videoCodecContext->priv_data, "preset", m_config.global_effects.video_encoding.preset.c_str(), 0);
+        av_opt_set_int(m_videoCodecContext->priv_data, "crf", m_config.global_effects.video_encoding.crf, 0);
 
         // 打开视频编码器
         if (avcodec_open2(m_videoCodecContext, videoCodec, nullptr) < 0)
@@ -152,10 +165,10 @@ namespace VideoCreator
     bool RenderEngine::createAudioStream()
     {
         // 查找音频编码器
-        const AVCodec *audioCodec = avcodec_find_encoder_by_name(m_config.output.audio_codec.c_str());
+        const AVCodec *audioCodec = avcodec_find_encoder_by_name(m_config.global_effects.audio_encoding.codec.c_str());
         if (!audioCodec)
         {
-            m_errorString = "找不到音频编码器: " + m_config.output.audio_codec;
+            m_errorString = "找不到音频编码器: " + m_config.global_effects.audio_encoding.codec;
             return false;
         }
 
@@ -179,9 +192,13 @@ namespace VideoCreator
 
         // 配置音频编码器参数
         m_audioCodecContext->sample_fmt = AV_SAMPLE_FMT_FLTP;
-        m_audioCodecContext->bit_rate = m_config.output.audio_bitrate;
+
+        // 解析比特率字符串
+        std::string bitrateStr = m_config.global_effects.audio_encoding.bitrate;
+        int bitrate = std::stoi(bitrateStr.substr(0, bitrateStr.length() - 1)) * 1000;
+        m_audioCodecContext->bit_rate = bitrate;
+
         m_audioCodecContext->sample_rate = 44100;
-        // 使用新的API设置声道布局
         m_audioCodecContext->ch_layout = AV_CHANNEL_LAYOUT_STEREO;
 
         // 打开音频编码器
@@ -203,20 +220,115 @@ namespace VideoCreator
 
     bool RenderEngine::renderScene(const SceneConfig &scene, double &currentTime)
     {
-        std::cout << "渲染场景: " << scene.name << " (" << scene.duration << "秒)" << std::endl;
+        std::cout << "渲染场景: " << scene.id << " (" << scene.duration << "秒)" << std::endl;
 
-        int totalFrames = static_cast<int>(scene.duration * m_config.output.frame_rate);
+        // 如果是转场场景，暂时跳过
+        if (scene.type == SceneType::TRANSITION)
+        {
+            std::cout << "跳过转场场景: " << scene.id << std::endl;
+            return true;
+        }
+
+        int totalFrames = static_cast<int>(scene.duration * m_config.project.fps);
+
+        // 解码图片
+        ImageDecoder imageDecoder;
+        if (!scene.resources.image.path.empty())
+        {
+            if (!imageDecoder.open(scene.resources.image.path))
+            {
+                std::cout << "无法打开图片: " << imageDecoder.getErrorString() << std::endl;
+                // 继续生成测试帧
+            }
+        }
+
+        // 解码音频
+        AudioDecoder audioDecoder;
+        std::vector<uint8_t> audioData;
+        if (!scene.resources.audio.path.empty())
+        {
+            if (audioDecoder.open(scene.resources.audio.path))
+            {
+                audioData = audioDecoder.decode();
+            }
+            else
+            {
+                std::cout << "无法打开音频: " << audioDecoder.getErrorString() << std::endl;
+            }
+        }
+
+        // 创建特效处理器
+        EffectProcessor effectProcessor;
+        effectProcessor.initialize(m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P);
 
         for (int frameIndex = 0; frameIndex < totalFrames; ++frameIndex)
         {
-            // 生成测试帧
-            if (!generateTestFrame(m_frameCount, m_config.output.width, m_config.output.height))
+            // 计算进度
+            double progress = static_cast<double>(frameIndex) / totalFrames;
+
+            // 解码图片帧
+            FFmpegUtils::AvFramePtr frame;
+            if (imageDecoder.getWidth() > 0)
             {
+                frame = imageDecoder.decode();
+                if (!frame)
+                {
+                    // 如果解码失败，生成测试帧
+                    frame = generateTestFrame(m_frameCount, m_config.project.width, m_config.project.height);
+                }
+            }
+            else
+            {
+                // 生成测试帧
+                frame = generateTestFrame(m_frameCount, m_config.project.width, m_config.project.height);
+            }
+
+            if (!frame)
+            {
+                m_errorString = "生成帧失败";
                 return false;
             }
 
+            // 应用Ken Burns特效
+            if (scene.effects.ken_burns.enabled)
+            {
+                frame = effectProcessor.applyKenBurns(frame.get(), scene.effects.ken_burns, progress);
+            }
+
+            if (!frame)
+            {
+                m_errorString = "应用特效失败";
+                return false;
+            }
+
+            frame->pts = m_frameCount;
+
+            // 编码帧
+            if (avcodec_send_frame(m_videoCodecContext, frame.get()) < 0)
+            {
+                m_errorString = "发送帧到编码器失败";
+                return false;
+            }
+
+            // 接收编码后的包
+            auto packet = FFmpegUtils::createAvPacket();
+            while (avcodec_receive_packet(m_videoCodecContext, packet.get()) >= 0)
+            {
+                packet->stream_index = m_videoStream->index;
+                av_packet_rescale_ts(packet.get(), m_videoCodecContext->time_base, m_videoStream->time_base);
+
+                // 写入包
+                if (av_interleaved_write_frame(m_outputContext, packet.get()) < 0)
+                {
+                    m_errorString = "写入视频包失败";
+                    return false;
+                }
+
+                av_packet_unref(packet.get());
+            }
+
             m_frameCount++;
-            m_progress = static_cast<int>((currentTime + frameIndex / static_cast<double>(m_config.output.frame_rate)) /
+            m_progress = static_cast<int>((currentTime + frameIndex / static_cast<double>(m_config.project.fps)) /
                                           (currentTime + scene.duration) * 100);
 
             // 每10帧输出一次进度
@@ -230,17 +342,15 @@ namespace VideoCreator
         return true;
     }
 
-    bool RenderEngine::generateTestFrame(int frameIndex, int width, int height)
+    FFmpegUtils::AvFramePtr RenderEngine::generateTestFrame(int frameIndex, int width, int height)
     {
         // 创建帧
         auto frame = FFmpegUtils::createAvFrame(width, height, AV_PIX_FMT_YUV420P);
         if (!frame)
         {
             m_errorString = "创建帧失败";
-            return false;
+            return nullptr;
         }
-
-        frame->pts = m_frameCount;
 
         // 生成简单的测试图案
         // Y分量 (亮度)
@@ -268,31 +378,7 @@ namespace VideoCreator
             }
         }
 
-        // 编码帧
-        if (avcodec_send_frame(m_videoCodecContext, frame.get()) < 0)
-        {
-            m_errorString = "发送帧到编码器失败";
-            return false;
-        }
-
-        // 接收编码后的包
-        auto packet = FFmpegUtils::createAvPacket();
-        while (avcodec_receive_packet(m_videoCodecContext, packet.get()) >= 0)
-        {
-            packet->stream_index = m_videoStream->index;
-            av_packet_rescale_ts(packet.get(), m_videoCodecContext->time_base, m_videoStream->time_base);
-
-            // 写入包
-            if (av_interleaved_write_frame(m_outputContext, packet.get()) < 0)
-            {
-                m_errorString = "写入视频包失败";
-                return false;
-            }
-
-            av_packet_unref(packet.get());
-        }
-
-        return true;
+        return frame;
     }
 
     void RenderEngine::cleanup()
