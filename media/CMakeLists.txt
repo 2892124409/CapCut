@@ -48,7 +48,7 @@ qt_add_qml_module(appmedia
 # ==========================================
 # 3. FFmpeg 路径配置
 # ==========================================
-set(FFMPEG_DIR "${CMAKE_SOURCE_DIR}/3rdparty/ffmpeg")
+set(FFMPEG_DIR "${CMAKE_SOURCE_DIR}/../3rdparty/ffmpeg")
 include_directories(${FFMPEG_DIR}/include)
 
 # ==========================================
