@@ -53,37 +53,66 @@ cmake --build .
 
 ```json
 {
+  /**
+   * 项目基本信息配置 (简化版)
+   */
   "project": {
-    "name": "示例项目",
-    "output_path": "output/demo_video.mp4",
-    "width": 1280,
-    "height": 720,
-    "fps": 30,
-    "background_color": "#000000"
+    "name": "勇敢猫咪",                         // 项目名称
+    "output_path": "自动生成或指定一个临时路径"   // 输出路径。如果未指定文件名，系统可能会根据 name 自动生成
+    // 注意：width, height, fps 均未在此处定义，系统将自动应用默认配置：
+    // Width: 1920, Height: 1080, FPS: 30, Background: #000000
   },
+
+  /**
+   * 场景序列配置
+   * 这里的场景没有显式的 "id"，系统将根据数组的顺序自动推断播放流程
+   */
   "scenes": [
+    /**
+     * 第一个场景：图片场景
+     */
     {
-      "type": "image_scene",
-      "duration": 5.0,
+      "type": "image_scene",                  // 场景类型
       "resources": {
-        "image": { "path": "assets/shot1.png" },
-        "audio": { "path": "assets/music1.mp3" }
+        "image": { 
+            "path": "C:/.../shot1.png"        // 图片路径。位置(0,0)、缩放(1.0)、旋转(0) 等参数均使用默认值
+        }, 
+        "audio": { 
+            "path": "C:/.../narration1.mp3"   // 音频路径。音量(1.0)、偏移(0.0) 等参数均使用默认值
+        } 
       },
       "effects": {
-        "ken_burns": { "enabled": true, "start_scale": 1.0, "end_scale": 1.1 },
-        "volume_mix": { "enabled": true, "fade_in": 0.5, "fade_out": 0.5 }
+        "ken_burns": { 
+            "enabled": true,                  // 启用推拉摇移特效
+            "preset": "zoom_in"               // 使用预设模式："zoom_in" (镜头推进)。
+                                              // 系统会自动计算 start_scale/end_scale 和坐标，无需手动指定具体的 x/y 参数
+        } 
       }
     },
+
+    /**
+     * 转场效果
+     * 系统自动识别此转场介于 数组索引[0] 和 数组索引[2] 之间
+     */
     {
-      "type": "transition",
-      "transition_type": "crossfade",
-      "duration": 1.0
+      "type": "transition",                   // 场景类型：转场
+      "transition_type": "crossfade",         // 转场方式：淡入淡出
+      "duration": 1.0                         // 转场耗时
+      // from_scene 和 to_scene 被省略，系统根据数组顺序自动判定为“上一个场景”到“下一个场景”
+    },
+
+    /**
+     * 第二个场景：图片场景
+     */
+    {
+       "type": "image_scene",                 // 下一个分镜的内容
+       // ... 后续配置逻辑同上 ...
+       "resources": {
+           // ...
+       }
     }
-  ],
-  "global_effects": {
-    "video_encoding": { "codec": "libx264", "bitrate": "5000k", "preset": "medium", "crf": 23 },
-    "audio_encoding": { "codec": "aac", "bitrate": "192k", "channels": 2 }
-  }
+  ]
+  // global_effects 被省略，系统将使用默认的编码参数 (H.264/AAC) 和音频标准化设置
 }
 ```
 
@@ -98,11 +127,6 @@ cmake --build .
 - 将资源放到 `assets/`，编辑 `test_config.json` 指向这些资源。
 - 构建完成后，将 `test_config.json` 和 `assets/` 内容复制到可执行文件同目录（CMake 已尝试自动复制）。
 - 运行程序并观察控制台日志，若遇到 FFmpeg 相关错误，可查看错误输出并确保 `3rdparty/ffmpeg/bin` 下的 DLL 可用或链接正确的静态库。
-
-## 常见问题
-
-- 如果找不到编码器（例如 `libx264`），请确认 FFmpeg 构建包含该编码器，或在 `test_config.json` 中改用系统可用编码器名称。
-- 若音频出现杂音/静音，说明输入音频格式需要转换，项目内已实现基于 `swr_convert` 的格式标准化（输出为交错 float）。
 
 ## 许可证
 
