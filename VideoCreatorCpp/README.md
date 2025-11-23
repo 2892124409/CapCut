@@ -1,122 +1,108 @@
 # VideoCreatorCpp - 基于FFmpeg的视频合成器
 
-一个基于FFmpeg的C++视频合成器，支持图片、视频、音频的合成和特效处理。
+这是一个基于 FFmpeg 的 C++ 视频合成器示例项目，支持通过 JSON 配置将图片、音频与转场组合成视频，并能应用简单特效（如 Ken Burns、音量淡入/淡出）。
 
-## 项目架构
+## 项目结构（简要）
 
 ```
 VideoCreatorCpp/
 ├── CMakeLists.txt              # CMake 构建脚本
-├── config.json                 # 项目配置文件
-├── assets/                     # 资源文件目录
+├── test_config.json            # 示例配置文件（项目使用该文件名）
+├── assets/                     # 资源文件目录（图片/音频）
 ├── src/
 │   ├── main.cpp                # 程序入口
-│   ├── common/                 # 通用工具
-│   ├── model/                  # 数据层
-│   ├── ffmpeg_utils/           # FFmpeg封装层
-│   ├── filter/                 # 滤镜图构建层
-│   └── engine/                 # 业务逻辑层
-└── third_party/                # 第三方库
+│   ├── model/                  # 配置数据结构与解析
+│   ├── ffmpeg_utils/           # FFmpeg RAII 辅助封装
+│   ├── filter/                 # 滤镜图构建与特效
+│   └── engine/                 # 渲染引擎与流程控制
+└── 3rdparty/                   # 第三方依赖（如 FFmpeg）
 ```
 
-## 功能特性
+## 功能概览
 
-- ✅ 支持图片、视频、音频资源合成
-- ✅ 支持淡入淡出、缩放、平移等特效
-- ✅ 基于JSON配置驱动
-- ✅ RAII资源管理
-- ✅ 模块化设计
+- 支持图片场景与转场（JSON 驱动）
+- 支持音频解码并应用简单音量淡入/淡出
+- 使用 FFmpeg 编码输出视频（默认 H.264 + AAC）
+- 基于 RAII 的 AVFrame/AVPacket 包装器，减少内存泄漏风险
 
 ## 构建说明
 
-### 前置要求
+### 要求
 
 - CMake 3.16+
-- FFmpeg 库 (已包含在项目中的3rdparty目录)
-- C++17 编译器
+- 已编译的 FFmpeg（项目中有 `3rdparty/ffmpeg` 示例）
+- 支持 C++17 的编译器（MinGW/MSVC 等）
 
-### 构建步骤
+### 构建示例（在 PowerShell 或 bash 中）
 
-```bash
-# 创建构建目录
-mkdir build
-cd build
-
-# 配置项目
+```powershell
+# 在仓库根目录下
+mkdir build; cd build
 cmake ..
-
-# 编译
 cmake --build .
 
-# 运行
-./VideoCreatorCpp
+# 运行（在 Windows 下可直接运行可执行文件）
+.\VideoCreatorCpp
 ```
 
-## 配置说明
+注意：`CMakeLists.txt` 会把 `test_config.json`（若存在）和 `assets/` 复制到构建输出目录，便于运行时读取资源。
 
-编辑 `config.json` 文件来配置您的视频项目：
+## 配置说明（`test_config.json`）
+
+程序在 `main.cpp` 中默认尝试加载 `test_config.json`。配置格式与程序中 `ProjectConfig`、`SceneConfig` 等结构对应，示例：
 
 ```json
 {
-  "project_name": "项目名称",
-  "output": {
-    "output_path": "输出文件路径",
-    "width": 1920,
-    "height": 1080,
-    "frame_rate": 30,
-    "video_bitrate": 4000000,
-    "audio_bitrate": 128000,
-    "video_codec": "libx264",
-    "audio_codec": "aac"
+  "project": {
+    "name": "示例项目",
+    "output_path": "output/demo_video.mp4",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "background_color": "#000000"
   },
   "scenes": [
     {
-      "name": "场景名称",
+      "type": "image_scene",
       "duration": 5.0,
-      "resources": [
-        {
-          "path": "资源文件路径",
-          "type": "IMAGE|VIDEO|AUDIO",
-          "start_time": 0.0,
-          "duration": 5.0,
-          "volume": 1.0
-        }
-      ],
-      "effects": [
-        {
-          "type": "FADE_IN|FADE_OUT|ZOOM|PAN|ROTATE",
-          "start_time": 0.0,
-          "duration": 1.0,
-          "params": "特效参数"
-        }
-      ]
+      "resources": {
+        "image": { "path": "assets/shot1.png" },
+        "audio": { "path": "assets/music1.mp3" }
+      },
+      "effects": {
+        "ken_burns": { "enabled": true, "start_scale": 1.0, "end_scale": 1.1 },
+        "volume_mix": { "enabled": true, "fade_in": 0.5, "fade_out": 0.5 }
+      }
+    },
+    {
+      "type": "transition",
+      "transition_type": "crossfade",
+      "duration": 1.0
     }
-  ]
+  ],
+  "global_effects": {
+    "video_encoding": { "codec": "libx264", "bitrate": "5000k", "preset": "medium", "crf": 23 },
+    "audio_encoding": { "codec": "aac", "bitrate": "192k", "channels": 2 }
+  }
 }
 ```
 
-## 资源准备
+说明要点：
+- `project.output_path`：输出文件路径（相对或绝对）
+- 每个场景 `type` 可为 `image_scene` 或 `transition`
+- 图像资源由 `resources.image.path` 指定，音频由 `resources.audio.path` 指定
+- Ken Burns 特效通过 `effects.ken_burns` 控制（程序当前支持 start/end scale 与坐标）
 
-将您的资源文件放在 `assets/` 目录下：
+## 运行与调试
 
-- 图片：JPG、PNG格式
-- 视频：MP4、MOV等格式
-- 音频：MP3、WAV等格式
+- 将资源放到 `assets/`，编辑 `test_config.json` 指向这些资源。
+- 构建完成后，将 `test_config.json` 和 `assets/` 内容复制到可执行文件同目录（CMake 已尝试自动复制）。
+- 运行程序并观察控制台日志，若遇到 FFmpeg 相关错误，可查看错误输出并确保 `3rdparty/ffmpeg/bin` 下的 DLL 可用或链接正确的静态库。
 
-## 使用示例
+## 常见问题
 
-1. 将您的资源文件放入 `assets/` 目录
-2. 编辑 `config.json` 配置项目
-3. 构建并运行程序
-4. 在 `output/` 目录查看生成的视频
-
-## 技术架构
-
-- **数据层 (model/)**: 项目配置和数据结构定义
-- **FFmpeg封装层 (ffmpeg_utils/)**: FFmpeg资源的RAII封装
-- **滤镜层 (filter/)**: FFmpeg滤镜图构建和管理
-- **业务逻辑层 (engine/)**: 解码、编码、渲染引擎
-- **通用工具 (common/)**: 日志、工具函数
+- 如果找不到编码器（例如 `libx264`），请确认 FFmpeg 构建包含该编码器，或在 `test_config.json` 中改用系统可用编码器名称。
+- 若音频出现杂音/静音，说明输入音频格式需要转换，项目内已实现基于 `swr_convert` 的格式标准化（输出为交错 float）。
 
 ## 许可证
 

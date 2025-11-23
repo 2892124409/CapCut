@@ -51,6 +51,9 @@ namespace VideoCreator
         // 清理资源
         void cleanup();
 
+        // flush 编码器剩余包
+        bool flushEncoder(AVCodecContext *codecCtx, AVStream *stream);
+
         // FFmpeg资源
         AVFormatContext *m_outputContext;
         AVCodecContext *m_videoCodecContext;

@@ -69,6 +69,23 @@ namespace VideoCreator
             currentTime += scene.duration;
         }
 
+        // 在写入文件尾之前，flush 编码器以输出剩余包
+        if (m_videoCodecContext && m_videoStream)
+        {
+            if (!flushEncoder(m_videoCodecContext, m_videoStream))
+            {
+                return false;
+            }
+        }
+
+        if (m_audioCodecContext && m_audioStream)
+        {
+            if (!flushEncoder(m_audioCodecContext, m_audioStream))
+            {
+                return false;
+            }
+        }
+
         // 写入文件尾
         if (av_write_trailer(m_outputContext) < 0)
         {
@@ -94,6 +111,16 @@ namespace VideoCreator
         {
             m_errorString = "输出上下文为空";
             return false;
+        }
+
+        // 如果需要打开输出 IO (非 AVFMT_NOFILE)，则打开输出文件
+        if (!(m_outputContext->oformat->flags & AVFMT_NOFILE))
+        {
+            if (avio_open(&m_outputContext->pb, m_config.project.output_path.c_str(), AVIO_FLAG_WRITE) < 0)
+            {
+                m_errorString = "无法打开输出文件";
+                return false;
+            }
         }
 
         return true;
@@ -159,6 +186,9 @@ namespace VideoCreator
             return false;
         }
 
+        // 设置 stream 的 time_base 与 codec 保持一致
+        m_videoStream->time_base = m_videoCodecContext->time_base;
+
         return true;
     }
 
@@ -191,6 +221,8 @@ namespace VideoCreator
         }
 
         // 配置音频编码器参数
+
+        // 目标输出格式：交错 float (会在 AudioDecoder 中进行统一转换)，但编码器可能使用不同的内部格式
         m_audioCodecContext->sample_fmt = AV_SAMPLE_FMT_FLTP;
 
         // 解析比特率字符串
@@ -199,7 +231,21 @@ namespace VideoCreator
         m_audioCodecContext->bit_rate = bitrate;
 
         m_audioCodecContext->sample_rate = 44100;
-        m_audioCodecContext->ch_layout = AV_CHANNEL_LAYOUT_STEREO;
+        // 设置通道数和布局（兼容旧/new API）
+        int out_channels = m_config.global_effects.audio_encoding.channels > 0 ? m_config.global_effects.audio_encoding.channels : 2;
+
+        // 设置 channel layout（使用 av_channel_layout_default 以兼容 ch_layout 结构）
+        memset(&m_audioCodecContext->ch_layout, 0, sizeof(m_audioCodecContext->ch_layout));
+#if defined(AV_CHANNEL_LAYOUT_INIT) || defined(av_channel_layout_default)
+        // 如果可用，使用 av_channel_layout_default 初始化 ch_layout
+        av_channel_layout_default(&m_audioCodecContext->ch_layout, out_channels);
+#else
+        // 回退：不设置 ch_layout，仅设置 sample_rate（某些 FFmpeg 版本使用不同字段）
+        (void)out_channels;
+#endif
+
+        // 设置 time_base 为 1/sample_rate，便于时间戳换算
+        m_audioCodecContext->time_base = AVRational{1, m_audioCodecContext->sample_rate};
 
         // 打开音频编码器
         if (avcodec_open2(m_audioCodecContext, audioCodec, nullptr) < 0)
@@ -214,6 +260,9 @@ namespace VideoCreator
             m_errorString = "复制音频流参数失败";
             return false;
         }
+
+        // 设置音频流的 time_base 与 codec context 保持一致
+        m_audioStream->time_base = m_audioCodecContext->time_base;
 
         return true;
     }
@@ -404,6 +453,47 @@ namespace VideoCreator
             avformat_free_context(m_outputContext);
             m_outputContext = nullptr;
         }
+    }
+
+    bool RenderEngine::flushEncoder(AVCodecContext *codecCtx, AVStream *stream)
+    {
+        if (!codecCtx || !stream)
+            return true; // nothing to flush
+
+        int ret = avcodec_send_frame(codecCtx, nullptr);
+        if (ret < 0 && ret != AVERROR_EOF)
+        {
+            m_errorString = "发送空帧到编码器以 flush 失败";
+            return false;
+        }
+
+        auto packet = FFmpegUtils::createAvPacket();
+        while (true)
+        {
+            ret = avcodec_receive_packet(codecCtx, packet.get());
+            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+            {
+                break;
+            }
+            else if (ret < 0)
+            {
+                m_errorString = "从编码器接收包失败 (flush)";
+                return false;
+            }
+
+            packet->stream_index = stream->index;
+            av_packet_rescale_ts(packet.get(), codecCtx->time_base, stream->time_base);
+
+            if (av_interleaved_write_frame(m_outputContext, packet.get()) < 0)
+            {
+                m_errorString = "写入包失败 (flush)";
+                return false;
+            }
+
+            av_packet_unref(packet.get());
+        }
+
+        return true;
     }
 
 } // namespace VideoCreator

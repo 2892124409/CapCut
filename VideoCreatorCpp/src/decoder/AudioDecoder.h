@@ -39,6 +39,7 @@ namespace VideoCreator
         AVFormatContext *m_formatContext;
         AVCodecContext *m_codecContext;
         int m_audioStreamIndex;
+        struct SwrContext *m_swrCtx;
 
         // 音频信息
         int m_sampleRate;

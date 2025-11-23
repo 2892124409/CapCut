@@ -6,7 +6,7 @@ namespace VideoCreator
 
     AudioDecoder::AudioDecoder()
         : m_formatContext(nullptr), m_codecContext(nullptr), m_audioStreamIndex(-1),
-          m_sampleRate(0), m_channels(0), m_sampleFormat(AV_SAMPLE_FMT_NONE), m_duration(0)
+          m_sampleRate(0), m_channels(0), m_sampleFormat(AV_SAMPLE_FMT_NONE), m_duration(0), m_swrCtx(nullptr)
     {
     }
 
@@ -80,9 +80,48 @@ namespace VideoCreator
 
         // 保存音频信息
         m_sampleRate = m_codecContext->sample_rate;
-        m_channels = m_codecContext->ch_layout.nb_channels;
+        // 使用 codecContext 的 ch_layout.nb_channels（与当前 FFmpeg 头兼容）
+        m_channels = m_codecContext->ch_layout.nb_channels > 0 ? m_codecContext->ch_layout.nb_channels : 2;
         m_sampleFormat = m_codecContext->sample_fmt;
         m_duration = audioStream->duration;
+
+        // 初始化 SwrContext：使用 swr_alloc + av_opt_set_int 来兼容不同 FFmpeg 版本
+        m_swrCtx = swr_alloc();
+        if (!m_swrCtx)
+        {
+            m_errorString = "无法分配 SwrContext";
+            cleanup();
+            return false;
+        }
+
+        // 输入参数来自 codecContext 的通道数，映射到常用通道布局宏
+        int64_t in_ch_layout = 0;
+        if (m_channels == 1)
+            in_ch_layout = AV_CH_LAYOUT_MONO;
+        else if (m_channels == 2)
+            in_ch_layout = AV_CH_LAYOUT_STEREO;
+
+        av_opt_set_int(m_swrCtx, "in_channel_layout", in_ch_layout, 0);
+        av_opt_set_int(m_swrCtx, "in_sample_rate", m_sampleRate, 0);
+        av_opt_set_int(m_swrCtx, "in_sample_fmt", m_sampleFormat, 0);
+
+        // 输出：交错 float，使用输入通道数的常见布局
+        int64_t out_ch_layout = 0;
+        if (m_channels == 1)
+            out_ch_layout = AV_CH_LAYOUT_MONO;
+        else if (m_channels == 2)
+            out_ch_layout = AV_CH_LAYOUT_STEREO;
+        av_opt_set_int(m_swrCtx, "out_channel_layout", out_ch_layout, 0);
+        av_opt_set_int(m_swrCtx, "out_sample_rate", m_sampleRate, 0);
+        av_opt_set_int(m_swrCtx, "out_sample_fmt", AV_SAMPLE_FMT_FLT, 0);
+
+        if (swr_init(m_swrCtx) < 0)
+        {
+            m_errorString = "无法初始化 SwrContext";
+            swr_free(&m_swrCtx);
+            cleanup();
+            return false;
+        }
 
         return true;
     }
@@ -111,7 +150,7 @@ namespace VideoCreator
             return {};
         }
 
-        int response;
+        int response = 0;
         while (av_read_frame(m_formatContext, packet) >= 0)
         {
             if (packet->stream_index == m_audioStreamIndex)
@@ -124,7 +163,7 @@ namespace VideoCreator
                     return {};
                 }
 
-                while (response >= 0)
+                for (;;)
                 {
                     response = avcodec_receive_frame(m_codecContext, frame.get());
                     if (response == AVERROR(EAGAIN) || response == AVERROR_EOF)
@@ -138,16 +177,48 @@ namespace VideoCreator
                         return {};
                     }
 
-                    // 将音频数据复制到vector
-                    int dataSize = av_samples_get_buffer_size(nullptr, m_channels,
-                                                              frame->nb_samples,
-                                                              m_sampleFormat, 1);
-                    if (dataSize > 0)
+                    // 使用 swr_convert 将帧转换为交错 float
+                    if (!m_swrCtx)
+                    {
+                        m_errorString = "SwrContext 未初始化";
+                        av_packet_free(&packet);
+                        return {};
+                    }
+
+                    int64_t delay = swr_get_delay(m_swrCtx, m_sampleRate);
+                    int max_out_samples = av_rescale_rnd(delay + frame->nb_samples, m_sampleRate, m_sampleRate, AV_ROUND_UP);
+
+                    uint8_t **out_data = nullptr;
+                    int out_linesize = 0;
+                    if (av_samples_alloc_array_and_samples(&out_data, &out_linesize, m_channels, max_out_samples, AV_SAMPLE_FMT_FLT, 0) < 0)
+                    {
+                        m_errorString = "分配输出样本缓冲区失败";
+                        av_packet_free(&packet);
+                        return {};
+                    }
+
+                    int converted_samples = swr_convert(m_swrCtx, out_data, max_out_samples,
+                                                        (const uint8_t **)frame->data, frame->nb_samples);
+
+                    if (converted_samples < 0)
+                    {
+                        m_errorString = "swr_convert 转换失败";
+                        av_freep(&out_data[0]);
+                        av_freep(&out_data);
+                        av_packet_free(&packet);
+                        return {};
+                    }
+
+                    int out_buffer_size = av_samples_get_buffer_size(&out_linesize, m_channels, converted_samples, AV_SAMPLE_FMT_FLT, 1);
+                    if (out_buffer_size > 0)
                     {
                         size_t currentSize = audioData.size();
-                        audioData.resize(currentSize + dataSize);
-                        memcpy(audioData.data() + currentSize, frame->data[0], dataSize);
+                        audioData.resize(currentSize + out_buffer_size);
+                        memcpy(audioData.data() + currentSize, out_data[0], out_buffer_size);
                     }
+
+                    av_freep(&out_data[0]);
+                    av_freep(&out_data);
                 }
             }
             av_packet_unref(packet);
@@ -155,7 +226,7 @@ namespace VideoCreator
 
         // 刷新解码器
         avcodec_send_packet(m_codecContext, nullptr);
-        while (response >= 0)
+        for (;;)
         {
             response = avcodec_receive_frame(m_codecContext, frame.get());
             if (response == AVERROR(EAGAIN) || response == AVERROR_EOF)
@@ -167,16 +238,36 @@ namespace VideoCreator
                 break;
             }
 
-            // 将音频数据复制到vector
-            int dataSize = av_samples_get_buffer_size(nullptr, m_channels,
-                                                      frame->nb_samples,
-                                                      m_sampleFormat, 1);
-            if (dataSize > 0)
+            if (!m_swrCtx)
             {
-                size_t currentSize = audioData.size();
-                audioData.resize(currentSize + dataSize);
-                memcpy(audioData.data() + currentSize, frame->data[0], dataSize);
+                break;
             }
+
+            int64_t delay = swr_get_delay(m_swrCtx, m_sampleRate);
+            int max_out_samples = av_rescale_rnd(delay + frame->nb_samples, m_sampleRate, m_sampleRate, AV_ROUND_UP);
+
+            uint8_t **out_data = nullptr;
+            int out_linesize = 0;
+            if (av_samples_alloc_array_and_samples(&out_data, &out_linesize, m_channels, max_out_samples, AV_SAMPLE_FMT_FLT, 0) < 0)
+            {
+                break;
+            }
+
+            int converted_samples = swr_convert(m_swrCtx, out_data, max_out_samples,
+                                                (const uint8_t **)frame->data, frame->nb_samples);
+            if (converted_samples > 0)
+            {
+                int out_buffer_size = av_samples_get_buffer_size(&out_linesize, m_channels, converted_samples, AV_SAMPLE_FMT_FLT, 1);
+                if (out_buffer_size > 0)
+                {
+                    size_t currentSize = audioData.size();
+                    audioData.resize(currentSize + out_buffer_size);
+                    memcpy(audioData.data() + currentSize, out_data[0], out_buffer_size);
+                }
+            }
+
+            av_freep(&out_data[0]);
+            av_freep(&out_data);
         }
 
         av_packet_free(&packet);
@@ -200,6 +291,12 @@ namespace VideoCreator
         {
             avformat_close_input(&m_formatContext);
             m_formatContext = nullptr;
+        }
+
+        if (m_swrCtx)
+        {
+            swr_free(&m_swrCtx);
+            m_swrCtx = nullptr;
         }
 
         m_audioStreamIndex = -1;

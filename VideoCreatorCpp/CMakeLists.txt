@@ -68,7 +68,12 @@ target_include_directories(VideoCreatorCpp PRIVATE
 
 # 复制资源文件
 file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/assets DESTINATION ${CMAKE_BINARY_DIR}/bin)
-file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/config.json DESTINATION ${CMAKE_BINARY_DIR}/bin)
+# 项目示例配置文件 (仓库中为 test_config.json)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test_config.json")
+    file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/test_config.json DESTINATION ${CMAKE_BINARY_DIR}/bin)
+else()
+    file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/config.json DESTINATION ${CMAKE_BINARY_DIR}/bin)
+endif()
 
 # 创建输出目录
 file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/bin/output)
