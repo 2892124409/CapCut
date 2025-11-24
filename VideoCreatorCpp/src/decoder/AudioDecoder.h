@@ -19,17 +19,15 @@ namespace VideoCreator
         // 打开音频文件
         bool open(const std::string &filePath);
 
-        // 解码音频数据
-        std::vector<uint8_t> decode();
+    // 尝试解码下一帧音频，重采样后返回
+    // 返回值: >0 表示成功, 0 表示文件结束(EOF), <0 表示错误
+    int decodeFrame(FFmpegUtils::AvFramePtr &frame);
 
-        // 获取音频信息
-        int getSampleRate() const { return m_sampleRate; }
-        int getChannels() const { return m_channels; }
-        AVSampleFormat getSampleFormat() const { return m_sampleFormat; }
-        int64_t getDuration() const { return m_duration; }
+    // 跳转到指定时间戳 (秒)
+    bool seek(double timestamp);
 
-        // 关闭解码器
-        void close();
+    // 关闭解码器并释放资源
+    void close();
 
         // 获取错误信息
         std::string getErrorString() const { return m_errorString; }

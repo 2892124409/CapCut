@@ -32,6 +32,8 @@ namespace VideoCreator
         ProjectConfig m_config;
         int m_progress;
         std::string m_errorString;
+        double m_totalProjectFrames;
+        int m_lastReportedProgress;
 
         // 创建输出上下文
         bool createOutputContext();
@@ -48,8 +50,18 @@ namespace VideoCreator
         // 渲染转场
         bool renderTransition(const SceneConfig &transitionScene, const SceneConfig &fromScene, const SceneConfig &toScene);
 
+
         // 生成测试帧 (用于演示)
         FFmpegUtils::AvFramePtr generateTestFrame(int frameIndex, int width, int height);
+
+        // 从FIFO缓冲区读取并发送固定大小的音频帧
+        bool sendBufferedAudioFrames();
+
+        // 冲洗音频缓冲区
+        bool flushAudio();
+
+        // 更新并报告进度
+        void updateAndReportProgress();
 
         // 清理资源
         void cleanup();
@@ -63,6 +75,7 @@ namespace VideoCreator
         AVCodecContext *m_audioCodecContext;
         AVStream *m_videoStream;
         AVStream *m_audioStream;
+        AVAudioFifo *m_audioFifo;
         int m_frameCount;
         int64_t m_audioSamplesCount;
     };

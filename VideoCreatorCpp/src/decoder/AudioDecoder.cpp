@@ -1,4 +1,5 @@
 #include "AudioDecoder.h"
+#include "ffmpeg_utils/AvPacketWrapper.h"
 #include <QDebug>
 
 namespace VideoCreator
@@ -97,23 +98,26 @@ namespace VideoCreator
         qDebug() << "音频解码器信息 - 采样率: " << m_sampleRate << " 通道数: " << m_channels << " 格式: " << m_sampleFormat;
 
         // 使用更简单的SwrContext初始化方法
-        // 输入：从解码器获取的格式
-        // 输出：交错float，立体声，44100Hz（标准音频格式）
+        // 输出：平面float，立体声，44100Hz（标准音频格式）
         int out_sample_rate = 44100;
         int out_channels = 2;
-        AVSampleFormat out_sample_fmt = AV_SAMPLE_FMT_FLT;
-        int64_t out_ch_layout = AV_CH_LAYOUT_STEREO;
+        AVSampleFormat out_sample_fmt = AV_SAMPLE_FMT_FLTP;
 
-        // 设置输入参数 - 使用通道布局而不是通道数
-        int64_t in_ch_layout = m_channels == 1 ? AV_CH_LAYOUT_MONO : AV_CH_LAYOUT_STEREO;
-        av_opt_set_int(m_swrCtx, "in_channel_layout", in_ch_layout, 0);
+        // 设置输入参数 - 使用 av_channel_layout_default 获取默认布局，更健壮
+        AVChannelLayout in_ch_layout;
+        av_channel_layout_default(&in_ch_layout, m_codecContext->ch_layout.nb_channels);
+        av_opt_set_chlayout(m_swrCtx, "in_chlayout", &in_ch_layout, 0);
         av_opt_set_int(m_swrCtx, "in_sample_rate", m_sampleRate, 0);
         av_opt_set_sample_fmt(m_swrCtx, "in_sample_fmt", m_sampleFormat, 0);
+        av_channel_layout_uninit(&in_ch_layout);
 
         // 设置输出参数
-        av_opt_set_int(m_swrCtx, "out_channel_layout", out_ch_layout, 0);
+        AVChannelLayout out_ch_layout;
+        av_channel_layout_default(&out_ch_layout, out_channels);
+        av_opt_set_chlayout(m_swrCtx, "out_chlayout", &out_ch_layout, 0);
         av_opt_set_int(m_swrCtx, "out_sample_rate", out_sample_rate, 0);
         av_opt_set_sample_fmt(m_swrCtx, "out_sample_fmt", out_sample_fmt, 0);
+        av_channel_layout_uninit(&out_ch_layout);
 
         qDebug() << "SwrContext 配置 - 输入: " << m_channels << "通道, " << m_sampleRate << "Hz, 格式" << m_sampleFormat;
         qDebug() << "SwrContext 配置 - 输出: " << out_channels << "通道, " << out_sample_rate << "Hz, 格式" << out_sample_fmt;
@@ -132,154 +136,99 @@ namespace VideoCreator
         return true;
     }
 
-    std::vector<uint8_t> AudioDecoder::decode()
+    bool AudioDecoder::seek(double timestamp)
     {
-        if (!m_formatContext || !m_codecContext)
-        {
-            m_errorString = "解码器未打开";
-            return {};
-        }
-
-        std::vector<uint8_t> audioData;
-        AVPacket *packet = av_packet_alloc();
-        if (!packet)
-        {
-            m_errorString = "无法分配数据包";
-            return {};
-        }
-
-        FFmpegUtils::AvFramePtr frame = FFmpegUtils::createAvFrame();
-        if (!frame)
-        {
-            m_errorString = "无法创建帧";
-            av_packet_free(&packet);
-            return {};
-        }
-
-        int response = 0;
-        while (av_read_frame(m_formatContext, packet) >= 0)
-        {
-            if (packet->stream_index == m_audioStreamIndex)
-            {
-                response = avcodec_send_packet(m_codecContext, packet);
-                if (response < 0)
-                {
-                    m_errorString = "发送数据包到解码器失败";
-                    av_packet_free(&packet);
-                    return {};
-                }
-
-                for (;;)
-                {
-                    response = avcodec_receive_frame(m_codecContext, frame.get());
-                    if (response == AVERROR(EAGAIN) || response == AVERROR_EOF)
-                    {
-                        break;
-                    }
-                    else if (response < 0)
-                    {
-                        m_errorString = "从解码器接收帧失败";
-                        av_packet_free(&packet);
-                        return {};
-                    }
-
-                    // 使用 swr_convert 将帧转换为交错 float
-                    if (!m_swrCtx)
-                    {
-                        m_errorString = "SwrContext 未初始化";
-                        av_packet_free(&packet);
-                        return {};
-                    }
-
-                    int64_t delay = swr_get_delay(m_swrCtx, m_sampleRate);
-                    int max_out_samples = av_rescale_rnd(delay + frame->nb_samples, m_sampleRate, m_sampleRate, AV_ROUND_UP);
-
-                    uint8_t **out_data = nullptr;
-                    int out_linesize = 0;
-                    if (av_samples_alloc_array_and_samples(&out_data, &out_linesize, m_channels, max_out_samples, AV_SAMPLE_FMT_FLT, 0) < 0)
-                    {
-                        m_errorString = "分配输出样本缓冲区失败";
-                        av_packet_free(&packet);
-                        return {};
-                    }
-
-                    int converted_samples = swr_convert(m_swrCtx, out_data, max_out_samples,
-                                                        (const uint8_t **)frame->data, frame->nb_samples);
-
-                    if (converted_samples < 0)
-                    {
-                        m_errorString = "swr_convert 转换失败";
-                        av_freep(&out_data[0]);
-                        av_freep(&out_data);
-                        av_packet_free(&packet);
-                        return {};
-                    }
-
-                    int out_buffer_size = av_samples_get_buffer_size(&out_linesize, m_channels, converted_samples, AV_SAMPLE_FMT_FLT, 1);
-                    if (out_buffer_size > 0)
-                    {
-                        size_t currentSize = audioData.size();
-                        audioData.resize(currentSize + out_buffer_size);
-                        memcpy(audioData.data() + currentSize, out_data[0], out_buffer_size);
-                    }
-
-                    av_freep(&out_data[0]);
-                    av_freep(&out_data);
-                }
-            }
-            av_packet_unref(packet);
-        }
-
-        // 刷新解码器
-        avcodec_send_packet(m_codecContext, nullptr);
-        for (;;)
-        {
-            response = avcodec_receive_frame(m_codecContext, frame.get());
-            if (response == AVERROR(EAGAIN) || response == AVERROR_EOF)
-            {
-                break;
-            }
-            else if (response < 0)
-            {
-                break;
-            }
-
-            if (!m_swrCtx)
-            {
-                break;
-            }
-
-            int64_t delay = swr_get_delay(m_swrCtx, m_sampleRate);
-            int max_out_samples = av_rescale_rnd(delay + frame->nb_samples, m_sampleRate, m_sampleRate, AV_ROUND_UP);
-
-            uint8_t **out_data = nullptr;
-            int out_linesize = 0;
-            if (av_samples_alloc_array_and_samples(&out_data, &out_linesize, m_channels, max_out_samples, AV_SAMPLE_FMT_FLT, 0) < 0)
-            {
-                break;
-            }
-
-            int converted_samples = swr_convert(m_swrCtx, out_data, max_out_samples,
-                                                (const uint8_t **)frame->data, frame->nb_samples);
-            if (converted_samples > 0)
-            {
-                int out_buffer_size = av_samples_get_buffer_size(&out_linesize, m_channels, converted_samples, AV_SAMPLE_FMT_FLT, 1);
-                if (out_buffer_size > 0)
-                {
-                    size_t currentSize = audioData.size();
-                    audioData.resize(currentSize + out_buffer_size);
-                    memcpy(audioData.data() + currentSize, out_data[0], out_buffer_size);
-                }
-            }
-
-            av_freep(&out_data[0]);
-            av_freep(&out_data);
-        }
-
-        av_packet_free(&packet);
-        return audioData;
+        if (!m_formatContext) return false;
+        int64_t target_ts = static_cast<int64_t>(timestamp / av_q2d(m_formatContext->streams[m_audioStreamIndex]->time_base));
+        return av_seek_frame(m_formatContext, m_audioStreamIndex, target_ts, AVSEEK_FLAG_BACKWARD) >= 0;
     }
-
+    
+    int AudioDecoder::decodeFrame(FFmpegUtils::AvFramePtr &decodedFrame) {
+        if (!m_formatContext || !m_codecContext) {
+            m_errorString = "解码器未打开";
+            return -1;
+        }
+    
+        auto packet = FFmpegUtils::createAvPacket();
+        auto frame = FFmpegUtils::createAvFrame();
+        int response;
+    
+        // This loop will continue as long as we can receive a valid frame
+        while (true) {
+            response = avcodec_receive_frame(m_codecContext, frame.get());
+            if (response >= 0) {
+                // Got a frame, now resample and return it
+                break;
+            }
+    
+            if (response == AVERROR_EOF) {
+                m_errorString = "解码器已完全刷新";
+                return 0; // EOF
+            }
+    
+            if (response != AVERROR(EAGAIN)) {
+                m_errorString = "从解码器接收帧时发生错误";
+                return -1; // Actual error
+            }
+    
+            // Need more data, so read a packet
+            response = av_read_frame(m_formatContext, packet.get());
+            if (response < 0) {
+                // End of file or error, flush the decoder
+                avcodec_send_packet(m_codecContext, nullptr);
+                // Loop back to avcodec_receive_frame to get the last frames
+                continue;
+            }
+    
+            if (packet->stream_index == m_audioStreamIndex) {
+                if (avcodec_send_packet(m_codecContext, packet.get()) < 0) {
+                    m_errorString = "发送数据包到解码器失败";
+                    av_packet_unref(packet.get());
+                    return -1;
+                }
+            }
+            av_packet_unref(packet.get());
+        }
+    
+            // We have a frame, resample it
+            AVChannelLayout out_ch_layout;
+            int64_t out_sample_rate;
+            AVSampleFormat out_sample_fmt;
+            av_opt_get_chlayout(m_swrCtx, "out_chlayout", 0, &out_ch_layout);
+            av_opt_get_int(m_swrCtx, "out_sample_rate", 0, &out_sample_rate);
+            av_opt_get_sample_fmt(m_swrCtx, "out_sample_fmt", 0, &out_sample_fmt);
+        
+            decodedFrame = FFmpegUtils::createAvFrame();
+            decodedFrame->nb_samples = static_cast<int>(av_rescale_rnd(swr_get_delay(m_swrCtx, frame->sample_rate) + frame->nb_samples, out_sample_rate, frame->sample_rate, AV_ROUND_UP));
+            decodedFrame->ch_layout = out_ch_layout;
+            decodedFrame->format = out_sample_fmt;
+            decodedFrame->sample_rate = static_cast<int>(out_sample_rate);    
+        if (av_frame_get_buffer(decodedFrame.get(), 0) < 0) {
+            m_errorString = "为重采样后的音频帧分配缓冲区失败";
+            av_channel_layout_uninit(&out_ch_layout);
+            return -1;
+        }
+    
+        int converted_samples = swr_convert(m_swrCtx, decodedFrame->data, decodedFrame->nb_samples, (const uint8_t **)frame->data, frame->nb_samples);
+        av_channel_layout_uninit(&out_ch_layout);
+        
+        if (converted_samples < 0) {
+            m_errorString = "swr_convert 转换失败";
+            return -1;
+        }
+    
+        decodedFrame->nb_samples = converted_samples;
+    
+        if (frame->pts != AV_NOPTS_VALUE) {
+            decodedFrame->pts = av_rescale_q(frame->pts, m_formatContext->streams[m_audioStreamIndex]->time_base, AVRational{1, static_cast<int>(out_sample_rate)});
+        } else {
+            // If PTS is not available, we can't sync. This is a problem.
+            // For now, we signal an issue but don't stop. A better approach might be to estimate.
+            qDebug() << "警告: 音频帧缺少PTS值";
+        }
+    
+        return 1; // Success
+    }    
     void AudioDecoder::close()
     {
         cleanup();

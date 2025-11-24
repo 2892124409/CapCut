@@ -7,7 +7,7 @@ namespace VideoCreator
 
     ImageDecoder::ImageDecoder()
         : m_formatContext(nullptr), m_codecContext(nullptr), m_videoStreamIndex(-1),
-          m_width(0), m_height(0), m_pixelFormat(AV_PIX_FMT_NONE), m_swsContext(nullptr)
+          m_width(0), m_height(0), m_pixelFormat(AV_PIX_FMT_NONE), m_swsContext(nullptr), m_cachedFrame(nullptr)
     {
     }
 
@@ -173,22 +173,20 @@ namespace VideoCreator
     FFmpegUtils::AvFramePtr ImageDecoder::decodeAndCache()
     {
         // 缓存第一帧，避免重复解码
-        static FFmpegUtils::AvFramePtr cachedFrame = nullptr;
-        
-        if (cachedFrame) {
+        if (m_cachedFrame) {
             qDebug() << "使用缓存的图片帧";
-            return FFmpegUtils::copyAvFrame(cachedFrame.get());
+            return FFmpegUtils::copyAvFrame(m_cachedFrame.get());
         }
         
-        cachedFrame = decode();
-        return FFmpegUtils::copyAvFrame(cachedFrame.get());
+        m_cachedFrame = decode();
+        return FFmpegUtils::copyAvFrame(m_cachedFrame.get());
     }
-
+    
     void ImageDecoder::close()
     {
         cleanup();
     }
-
+    
     FFmpegUtils::AvFramePtr ImageDecoder::scaleToSize(FFmpegUtils::AvFramePtr& frame, int targetWidth, int targetHeight, AVPixelFormat targetFormat)
     {
         if (!frame)
@@ -196,13 +194,13 @@ namespace VideoCreator
             m_errorString = "输入帧为空";
             return nullptr;
         }
-
+    
         // 如果尺寸和格式已经匹配，直接返回原帧
         if (frame->width == targetWidth && frame->height == targetHeight && frame->format == targetFormat)
         {
             return std::move(frame);
         }
-
+    
         // 创建缩放上下文
         m_swsContext = sws_getCachedContext(m_swsContext,
                                            frame->width, frame->height, (AVPixelFormat)frame->format,
@@ -213,7 +211,7 @@ namespace VideoCreator
             m_errorString = "无法创建缩放上下文";
             return nullptr;
         }
-
+    
         // 创建目标帧
         auto scaledFrame = FFmpegUtils::createAvFrame(targetWidth, targetHeight, targetFormat);
         if (!scaledFrame)
@@ -221,7 +219,7 @@ namespace VideoCreator
             m_errorString = "无法创建缩放后的帧";
             return nullptr;
         }
-
+    
         // 执行缩放
         int result = sws_scale(m_swsContext,
                               frame->data, frame->linesize,
@@ -232,34 +230,35 @@ namespace VideoCreator
             m_errorString = "缩放失败";
             return nullptr;
         }
-
+    
         return scaledFrame;
     }
-
+    
     void ImageDecoder::cleanup()
     {
+        m_cachedFrame.reset(); // 清除缓存
+    
         if (m_swsContext)
         {
             sws_freeContext(m_swsContext);
             m_swsContext = nullptr;
         }
-
+    
         if (m_codecContext)
         {
             avcodec_free_context(&m_codecContext);
             m_codecContext = nullptr;
         }
-
+    
         if (m_formatContext)
         {
             avformat_close_input(&m_formatContext);
             m_formatContext = nullptr;
         }
-
+    
         m_videoStreamIndex = -1;
         m_width = 0;
         m_height = 0;
         m_pixelFormat = AV_PIX_FMT_NONE;
     }
-
 } // namespace VideoCreator

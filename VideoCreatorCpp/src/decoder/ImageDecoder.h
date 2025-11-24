@@ -51,6 +51,7 @@ namespace VideoCreator
         AVPixelFormat m_pixelFormat;
 
         std::string m_errorString;
+        FFmpegUtils::AvFramePtr m_cachedFrame;
 
         // 清理资源
         void cleanup();
