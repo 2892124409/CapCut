@@ -329,6 +329,19 @@ namespace VideoCreator
                 {
                     videoFrame = generateTestFrame(m_frameCount, m_config.project.width, m_config.project.height);
                 }
+                else
+                {
+                    // 缩放图像到目标尺寸
+                    auto scaledFrame = imageDecoder.scaleToSize(videoFrame, m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P);
+                    if (scaledFrame)
+                    {
+                        videoFrame = std::move(scaledFrame);
+                    }
+                    else
+                    {
+                        qDebug() << "图像缩放失败，使用原图:" << imageDecoder.getErrorString();
+                    }
+                }
             }
             else
             {
@@ -464,6 +477,28 @@ namespace VideoCreator
         {
             m_errorString = "解码转场帧失败";
             return false;
+        }
+
+        // 缩放转场图像到目标尺寸
+        auto scaledFromFrame = fromDecoder.scaleToSize(fromFrame, m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P);
+        auto scaledToFrame = toDecoder.scaleToSize(toFrame, m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P);
+        
+        if (scaledFromFrame)
+        {
+            fromFrame = std::move(scaledFromFrame);
+        }
+        else
+        {
+            qDebug() << "转场图像缩放失败，使用原图:" << fromDecoder.getErrorString();
+        }
+        
+        if (scaledToFrame)
+        {
+            toFrame = std::move(scaledToFrame);
+        }
+        else
+        {
+            qDebug() << "转场图像缩放失败，使用原图:" << toDecoder.getErrorString();
         }
 
         EffectProcessor effectProcessor;

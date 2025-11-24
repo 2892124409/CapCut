@@ -47,6 +47,7 @@ inline AvFramePtr createAvFrame(int width, int height, AVPixelFormat format) {
     frame->height = height;
     frame->format = format;
     
+    // 确保像素格式正确设置
     if (av_frame_get_buffer(frame.get(), 32) < 0) {
         return nullptr;
     }

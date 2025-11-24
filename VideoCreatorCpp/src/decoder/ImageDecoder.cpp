@@ -1,12 +1,13 @@
 #include "ImageDecoder.h"
 #include <iostream>
+#include <QDebug>
 
 namespace VideoCreator
 {
 
     ImageDecoder::ImageDecoder()
         : m_formatContext(nullptr), m_codecContext(nullptr), m_videoStreamIndex(-1),
-          m_width(0), m_height(0), m_pixelFormat(AV_PIX_FMT_NONE)
+          m_width(0), m_height(0), m_pixelFormat(AV_PIX_FMT_NONE), m_swsContext(nullptr)
     {
     }
 
@@ -166,8 +167,61 @@ namespace VideoCreator
         cleanup();
     }
 
+    FFmpegUtils::AvFramePtr ImageDecoder::scaleToSize(FFmpegUtils::AvFramePtr& frame, int targetWidth, int targetHeight, AVPixelFormat targetFormat)
+    {
+        if (!frame)
+        {
+            m_errorString = "输入帧为空";
+            return nullptr;
+        }
+
+        // 如果尺寸和格式已经匹配，直接返回原帧
+        if (frame->width == targetWidth && frame->height == targetHeight && frame->format == targetFormat)
+        {
+            return std::move(frame);
+        }
+
+        // 创建缩放上下文
+        m_swsContext = sws_getCachedContext(m_swsContext,
+                                           frame->width, frame->height, (AVPixelFormat)frame->format,
+                                           targetWidth, targetHeight, targetFormat,
+                                           SWS_BILINEAR, nullptr, nullptr, nullptr);
+        if (!m_swsContext)
+        {
+            m_errorString = "无法创建缩放上下文";
+            return nullptr;
+        }
+
+        // 创建目标帧
+        auto scaledFrame = FFmpegUtils::createAvFrame(targetWidth, targetHeight, targetFormat);
+        if (!scaledFrame)
+        {
+            m_errorString = "无法创建缩放后的帧";
+            return nullptr;
+        }
+
+        // 执行缩放
+        int result = sws_scale(m_swsContext,
+                              frame->data, frame->linesize,
+                              0, frame->height,
+                              scaledFrame->data, scaledFrame->linesize);
+        if (result <= 0)
+        {
+            m_errorString = "缩放失败";
+            return nullptr;
+        }
+
+        return scaledFrame;
+    }
+
     void ImageDecoder::cleanup()
     {
+        if (m_swsContext)
+        {
+            sws_freeContext(m_swsContext);
+            m_swsContext = nullptr;
+        }
+
         if (m_codecContext)
         {
             avcodec_free_context(&m_codecContext);

@@ -21,6 +21,9 @@ namespace VideoCreator
         // 解码图片
         FFmpegUtils::AvFramePtr decode();
 
+        // 缩放图片到指定尺寸
+        FFmpegUtils::AvFramePtr scaleToSize(FFmpegUtils::AvFramePtr& frame, int targetWidth, int targetHeight, AVPixelFormat targetFormat = AV_PIX_FMT_YUV420P);
+
         // 获取图片信息
         int getWidth() const { return m_width; }
         int getHeight() const { return m_height; }
@@ -37,6 +40,7 @@ namespace VideoCreator
         AVFormatContext *m_formatContext;
         AVCodecContext *m_codecContext;
         int m_videoStreamIndex;
+        SwsContext *m_swsContext;
 
         // 图片信息
         int m_width;

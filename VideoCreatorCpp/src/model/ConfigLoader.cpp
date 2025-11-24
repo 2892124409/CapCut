@@ -60,14 +60,17 @@ namespace VideoCreator
             QJsonArray scenesArray = root["scenes"].toArray();
             config.scenes.clear();
 
+            int sceneId = 1; // 从1开始分配场景ID
             for (const QJsonValue &sceneValue : scenesArray)
             {
                 if (sceneValue.isObject())
                 {
                     SceneConfig scene;
+                    scene.id = sceneId; // 自动分配场景ID
                     if (parseSceneConfig(sceneValue.toObject(), scene))
                     {
                         config.scenes.push_back(scene);
+                        sceneId++;
                     }
                     else
                     {

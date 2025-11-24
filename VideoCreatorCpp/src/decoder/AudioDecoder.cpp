@@ -100,6 +100,8 @@ namespace VideoCreator
             in_ch_layout = AV_CH_LAYOUT_MONO;
         else if (m_channels == 2)
             in_ch_layout = AV_CH_LAYOUT_STEREO;
+        else
+            in_ch_layout = AV_CH_LAYOUT_STEREO; // 默认使用立体声
 
         av_opt_set_int(m_swrCtx, "in_channel_layout", in_ch_layout, 0);
         av_opt_set_int(m_swrCtx, "in_sample_rate", m_sampleRate, 0);
@@ -111,6 +113,8 @@ namespace VideoCreator
             out_ch_layout = AV_CH_LAYOUT_MONO;
         else if (m_channels == 2)
             out_ch_layout = AV_CH_LAYOUT_STEREO;
+        else
+            out_ch_layout = AV_CH_LAYOUT_STEREO; // 默认使用立体声
         av_opt_set_int(m_swrCtx, "out_channel_layout", out_ch_layout, 0);
         av_opt_set_int(m_swrCtx, "out_sample_rate", m_sampleRate, 0);
         av_opt_set_int(m_swrCtx, "out_sample_fmt", AV_SAMPLE_FMT_FLT, 0);
