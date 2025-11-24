@@ -1,5 +1,5 @@
 #include "AudioDecoder.h"
-#include <iostream>
+#include <QDebug>
 
 namespace VideoCreator
 {

@@ -43,7 +43,10 @@ namespace VideoCreator
         bool createAudioStream();
 
         // 渲染单个场景
-        bool renderScene(const SceneConfig &scene, double &currentTime);
+        bool renderScene(const SceneConfig &scene);
+
+        // 渲染转场
+        bool renderTransition(const SceneConfig &transitionScene, const SceneConfig &fromScene, const SceneConfig &toScene);
 
         // 生成测试帧 (用于演示)
         FFmpegUtils::AvFramePtr generateTestFrame(int frameIndex, int width, int height);
@@ -61,6 +64,7 @@ namespace VideoCreator
         AVStream *m_videoStream;
         AVStream *m_audioStream;
         int m_frameCount;
+        int64_t m_audioSamplesCount;
     };
 
 } // namespace VideoCreator

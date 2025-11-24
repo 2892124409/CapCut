@@ -22,6 +22,22 @@ namespace VideoCreator
         SLIDE
     };
 
+    // 辅助函数：将 TransitionType 转换为字符串
+    inline std::string transitionTypeToString(TransitionType type)
+    {
+        switch (type)
+        {
+        case TransitionType::CROSSFADE:
+            return "CROSSFADE";
+        case TransitionType::WIPE:
+            return "WIPE";
+        case TransitionType::SLIDE:
+            return "SLIDE";
+        default:
+            return "UNKNOWN";
+        }
+    }
+
     // 图片配置
     struct ImageConfig
     {

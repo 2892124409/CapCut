@@ -24,6 +24,21 @@ namespace VideoCreator
                                               const KenBurnsEffect &effect,
                                               double progress);
 
+        // 应用淡入淡出转场
+        FFmpegUtils::AvFramePtr applyCrossfade(const AVFrame *fromFrame,
+                                               const AVFrame *toFrame,
+                                               double progress);
+
+        // 应用擦除转场
+        FFmpegUtils::AvFramePtr applyWipe(const AVFrame *fromFrame,
+                                           const AVFrame *toFrame,
+                                           double progress);
+
+        // 应用滑动转场
+        FFmpegUtils::AvFramePtr applySlide(const AVFrame *fromFrame,
+                                           const AVFrame *toFrame,
+                                           double progress);
+
         // 应用音量混合特效
         std::vector<uint8_t> applyVolumeMix(const std::vector<uint8_t> &audioData,
                                             const VolumeMixEffect &effect,
@@ -40,6 +55,7 @@ namespace VideoCreator
         // FFmpeg滤镜相关
         AVFilterGraph *m_filterGraph;
         AVFilterContext *m_buffersrcContext;
+        AVFilterContext *m_buffersrcContext2;
         AVFilterContext *m_buffersinkContext;
 
         int m_width;
@@ -53,6 +69,9 @@ namespace VideoCreator
 
         // 初始化滤镜图
         bool initFilterGraph(const std::string &filterDescription);
+
+        // 初始化双输入滤镜图
+        bool initTwoInputFilterGraph(const std::string &filterDescription);
 
         // 清理资源
         void cleanup();

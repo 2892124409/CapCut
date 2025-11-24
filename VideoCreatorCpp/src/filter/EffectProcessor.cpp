@@ -6,7 +6,7 @@ namespace VideoCreator
 {
 
     EffectProcessor::EffectProcessor()
-        : m_filterGraph(nullptr), m_buffersrcContext(nullptr), m_buffersinkContext(nullptr),
+        : m_filterGraph(nullptr), m_buffersrcContext(nullptr), m_buffersrcContext2(nullptr), m_buffersinkContext(nullptr),
           m_width(0), m_height(0), m_pixelFormat(AV_PIX_FMT_NONE)
     {
     }
@@ -50,6 +50,134 @@ namespace VideoCreator
         }
 
         // 从滤镜接收处理后的帧
+        auto outputFrame = FFmpegUtils::createAvFrame(m_width, m_height, m_pixelFormat);
+        if (!outputFrame)
+        {
+            m_errorString = "创建输出帧失败";
+            return nullptr;
+        }
+
+        int ret = av_buffersink_get_frame(m_buffersinkContext, outputFrame.get());
+        if (ret < 0)
+        {
+            if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF)
+            {
+                m_errorString = "从滤镜接收帧失败";
+            }
+            return nullptr;
+        }
+
+        return outputFrame;
+    }
+
+    FFmpegUtils::AvFramePtr EffectProcessor::applyCrossfade(const AVFrame *fromFrame, const AVFrame *toFrame, double progress)
+    {
+        if (!fromFrame || !toFrame)
+        {
+            return nullptr;
+        }
+
+        std::stringstream filterDesc;
+        filterDesc << "[in0]fifo[a];[in1]fifo[b];[a][b]blend=all_expr='A*(1-T)+B*T':T=" << progress;
+
+        if (!initTwoInputFilterGraph(filterDesc.str()))
+        {
+            return nullptr;
+        }
+
+        if (av_buffersrc_add_frame(m_buffersrcContext, const_cast<AVFrame *>(fromFrame)) < 0 ||
+            av_buffersrc_add_frame(m_buffersrcContext2, const_cast<AVFrame *>(toFrame)) < 0)
+        {
+            m_errorString = "发送帧到滤镜失败";
+            return nullptr;
+        }
+
+        auto outputFrame = FFmpegUtils::createAvFrame(m_width, m_height, m_pixelFormat);
+        if (!outputFrame)
+        {
+            m_errorString = "创建输出帧失败";
+            return nullptr;
+        }
+
+        int ret = av_buffersink_get_frame(m_buffersinkContext, outputFrame.get());
+        if (ret < 0)
+        {
+            if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF)
+            {
+                m_errorString = "从滤镜接收帧失败";
+            }
+            return nullptr;
+        }
+
+        return outputFrame;
+    }
+
+    FFmpegUtils::AvFramePtr EffectProcessor::applyWipe(const AVFrame *fromFrame, const AVFrame *toFrame, double progress)
+    {
+        if (!fromFrame || !toFrame)
+        {
+            return nullptr;
+        }
+
+        std::stringstream filterDesc;
+        filterDesc << "[in0]fifo[a];[in1]fifo[b];"
+                   << "[a][b]blend=all_mode=shortest:all_expr='if(gte(X,W*" << progress << "),A,B)'";
+
+        if (!initTwoInputFilterGraph(filterDesc.str()))
+        {
+            return nullptr;
+        }
+
+        if (av_buffersrc_add_frame(m_buffersrcContext, const_cast<AVFrame *>(fromFrame)) < 0 ||
+            av_buffersrc_add_frame(m_buffersrcContext2, const_cast<AVFrame *>(toFrame)) < 0)
+        {
+            m_errorString = "发送帧到滤镜失败";
+            return nullptr;
+        }
+
+        auto outputFrame = FFmpegUtils::createAvFrame(m_width, m_height, m_pixelFormat);
+        if (!outputFrame)
+        {
+            m_errorString = "创建输出帧失败";
+            return nullptr;
+        }
+
+        int ret = av_buffersink_get_frame(m_buffersinkContext, outputFrame.get());
+        if (ret < 0)
+        {
+            if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF)
+            {
+                m_errorString = "从滤镜接收帧失败";
+            }
+            return nullptr;
+        }
+
+        return outputFrame;
+    }
+
+    FFmpegUtils::AvFramePtr EffectProcessor::applySlide(const AVFrame *fromFrame, const AVFrame *toFrame, double progress)
+    {
+        if (!fromFrame || !toFrame)
+        {
+            return nullptr;
+        }
+
+        std::stringstream filterDesc;
+        filterDesc << "[in0]fifo[a];[in1]fifo[b];"
+                   << "[a][b]overlay=x='W*(" << progress << "-1)':y=0";
+
+        if (!initTwoInputFilterGraph(filterDesc.str()))
+        {
+            return nullptr;
+        }
+
+        if (av_buffersrc_add_frame(m_buffersrcContext, const_cast<AVFrame *>(fromFrame)) < 0 ||
+            av_buffersrc_add_frame(m_buffersrcContext2, const_cast<AVFrame *>(toFrame)) < 0)
+        {
+            m_errorString = "发送帧到滤镜失败";
+            return nullptr;
+        }
+
         auto outputFrame = FFmpegUtils::createAvFrame(m_width, m_height, m_pixelFormat);
         if (!outputFrame)
         {
@@ -184,6 +312,102 @@ namespace VideoCreator
         avfilter_inout_free(&outputs);
 
         // 配置滤镜图
+        if (avfilter_graph_config(m_filterGraph, nullptr) < 0)
+        {
+            m_errorString = "无法配置滤镜图";
+            cleanup();
+            return false;
+        }
+
+        return true;
+    }
+
+    bool EffectProcessor::initTwoInputFilterGraph(const std::string &filterDescription)
+    {
+        cleanup();
+
+        m_filterGraph = avfilter_graph_alloc();
+        if (!m_filterGraph)
+        {
+            m_errorString = "无法分配滤镜图";
+            return false;
+        }
+
+        const AVFilter *buffersrc = avfilter_get_by_name("buffer");
+        if (!buffersrc)
+        {
+            m_errorString = "无法找到buffer滤镜";
+            cleanup();
+            return false;
+        }
+
+        std::stringstream args;
+        args << "video_size=" << m_width << "x" << m_height << ":pix_fmt=" << m_pixelFormat
+             << ":time_base=1/30:pixel_aspect=1/1";
+
+        if (avfilter_graph_create_filter(&m_buffersrcContext, buffersrc, "in0",
+                                         args.str().c_str(), nullptr, m_filterGraph) < 0)
+        {
+            m_errorString = "无法创建buffer源滤镜 1";
+            cleanup();
+            return false;
+        }
+
+        if (avfilter_graph_create_filter(&m_buffersrcContext2, buffersrc, "in1",
+                                         args.str().c_str(), nullptr, m_filterGraph) < 0)
+        {
+            m_errorString = "无法创建buffer源滤镜 2";
+            cleanup();
+            return false;
+        }
+
+        const AVFilter *buffersink = avfilter_get_by_name("buffersink");
+        if (!buffersink)
+        {
+            m_errorString = "无法找到buffersink滤镜";
+            cleanup();
+            return false;
+        }
+
+        if (avfilter_graph_create_filter(&m_buffersinkContext, buffersink, "out",
+                                         nullptr, nullptr, m_filterGraph) < 0)
+        {
+            m_errorString = "无法创建buffer sink滤镜";
+            cleanup();
+            return false;
+        }
+
+        AVFilterInOut *inputs = avfilter_inout_alloc();
+        AVFilterInOut *outputs = avfilter_inout_alloc();
+
+        outputs->name = av_strdup("out");
+        outputs->filter_ctx = m_buffersinkContext;
+        outputs->pad_idx = 0;
+        outputs->next = nullptr;
+        
+        inputs->name = av_strdup("in0");
+        inputs->filter_ctx = m_buffersrcContext;
+        inputs->pad_idx = 0;
+        inputs->next = avfilter_inout_alloc();
+        inputs->next->name = av_strdup("in1");
+        inputs->next->filter_ctx = m_buffersrcContext2;
+        inputs->next->pad_idx = 0;
+        inputs->next->next = nullptr;
+
+
+        if (avfilter_graph_parse_ptr(m_filterGraph, filterDescription.c_str(),
+                                     &outputs, &inputs, nullptr) < 0)
+        {
+            m_errorString = "无法解析滤镜图";
+            avfilter_inout_free(&inputs);
+            avfilter_inout_free(&outputs);
+            cleanup();
+            return false;
+        }
+
+        avfilter_inout_free(&inputs);
+        avfilter_inout_free(&outputs);
+
         if (avfilter_graph_config(m_filterGraph, nullptr) < 0)
         {
             m_errorString = "无法配置滤镜图";
