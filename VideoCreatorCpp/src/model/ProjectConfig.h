@@ -67,6 +67,7 @@ namespace VideoCreator
     struct KenBurnsEffect
     {
         bool enabled = false;     // 是否启用
+        std::string preset;       // 预设名称, e.g., "zoom_in"
         double start_scale = 1.0; // 开始缩放
         double end_scale = 1.0;   // 结束缩放
         int start_x = 0;          // 开始X坐标

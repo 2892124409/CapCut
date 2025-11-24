@@ -310,6 +310,11 @@ namespace VideoCreator
             effect.enabled = json["enabled"].toBool();
         }
 
+        if (json.contains("preset") && json["preset"].isString())
+        {
+            effect.preset = json["preset"].toString().toStdString();
+        }
+
         if (json.contains("start_scale") && json["start_scale"].isDouble())
         {
             effect.start_scale = json["start_scale"].toDouble();
