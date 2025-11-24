@@ -18,10 +18,13 @@ namespace VideoCreator
 
     bool ImageDecoder::open(const std::string &filePath)
     {
+        qDebug() << "打开图片文件: " << filePath.c_str();
+        
         // 打开输入文件
         if (avformat_open_input(&m_formatContext, filePath.c_str(), nullptr, nullptr) < 0)
         {
             m_errorString = "无法打开图片文件: " + filePath;
+            qDebug() << "打开图片文件失败: " << m_errorString.c_str();
             return false;
         }
 
@@ -84,6 +87,8 @@ namespace VideoCreator
         m_height = m_codecContext->height;
         m_pixelFormat = m_codecContext->pix_fmt;
 
+        qDebug() << "图片解码器初始化成功 - 尺寸: " << m_width << "x" << m_height << " 格式: " << m_pixelFormat;
+
         return true;
     }
 
@@ -137,6 +142,7 @@ namespace VideoCreator
                 }
 
                 // 成功解码一帧
+                qDebug() << "成功解码图片帧 - 尺寸: " << frame->width << "x" << frame->height << " 格式: " << frame->format;
                 av_packet_free(&packet);
                 return frame;
             }
@@ -149,6 +155,7 @@ namespace VideoCreator
         if (response == AVERROR(EAGAIN) || response == AVERROR_EOF)
         {
             av_packet_free(&packet);
+            qDebug() << "图片解码器刷新完成，无更多帧";
             return nullptr;
         }
         else if (response < 0)
@@ -158,8 +165,23 @@ namespace VideoCreator
             return nullptr;
         }
 
+        qDebug() << "成功解码图片帧 (刷新) - 尺寸: " << frame->width << "x" << frame->height << " 格式: " << frame->format;
         av_packet_free(&packet);
         return frame;
+    }
+
+    FFmpegUtils::AvFramePtr ImageDecoder::decodeAndCache()
+    {
+        // 缓存第一帧，避免重复解码
+        static FFmpegUtils::AvFramePtr cachedFrame = nullptr;
+        
+        if (cachedFrame) {
+            qDebug() << "使用缓存的图片帧";
+            return FFmpegUtils::copyAvFrame(cachedFrame.get());
+        }
+        
+        cachedFrame = decode();
+        return FFmpegUtils::copyAvFrame(cachedFrame.get());
     }
 
     void ImageDecoder::close()

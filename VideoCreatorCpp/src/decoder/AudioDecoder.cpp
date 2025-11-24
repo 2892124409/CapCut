@@ -94,38 +94,40 @@ namespace VideoCreator
             return false;
         }
 
-        // 输入参数来自 codecContext 的通道数，映射到常用通道布局宏
-        int64_t in_ch_layout = 0;
-        if (m_channels == 1)
-            in_ch_layout = AV_CH_LAYOUT_MONO;
-        else if (m_channels == 2)
-            in_ch_layout = AV_CH_LAYOUT_STEREO;
-        else
-            in_ch_layout = AV_CH_LAYOUT_STEREO; // 默认使用立体声
+        qDebug() << "音频解码器信息 - 采样率: " << m_sampleRate << " 通道数: " << m_channels << " 格式: " << m_sampleFormat;
 
+        // 使用更简单的SwrContext初始化方法
+        // 输入：从解码器获取的格式
+        // 输出：交错float，立体声，44100Hz（标准音频格式）
+        int out_sample_rate = 44100;
+        int out_channels = 2;
+        AVSampleFormat out_sample_fmt = AV_SAMPLE_FMT_FLT;
+        int64_t out_ch_layout = AV_CH_LAYOUT_STEREO;
+
+        // 设置输入参数 - 使用通道布局而不是通道数
+        int64_t in_ch_layout = m_channels == 1 ? AV_CH_LAYOUT_MONO : AV_CH_LAYOUT_STEREO;
         av_opt_set_int(m_swrCtx, "in_channel_layout", in_ch_layout, 0);
         av_opt_set_int(m_swrCtx, "in_sample_rate", m_sampleRate, 0);
-        av_opt_set_int(m_swrCtx, "in_sample_fmt", m_sampleFormat, 0);
+        av_opt_set_sample_fmt(m_swrCtx, "in_sample_fmt", m_sampleFormat, 0);
 
-        // 输出：交错 float，使用输入通道数的常见布局
-        int64_t out_ch_layout = 0;
-        if (m_channels == 1)
-            out_ch_layout = AV_CH_LAYOUT_MONO;
-        else if (m_channels == 2)
-            out_ch_layout = AV_CH_LAYOUT_STEREO;
-        else
-            out_ch_layout = AV_CH_LAYOUT_STEREO; // 默认使用立体声
+        // 设置输出参数
         av_opt_set_int(m_swrCtx, "out_channel_layout", out_ch_layout, 0);
-        av_opt_set_int(m_swrCtx, "out_sample_rate", m_sampleRate, 0);
-        av_opt_set_int(m_swrCtx, "out_sample_fmt", AV_SAMPLE_FMT_FLT, 0);
+        av_opt_set_int(m_swrCtx, "out_sample_rate", out_sample_rate, 0);
+        av_opt_set_sample_fmt(m_swrCtx, "out_sample_fmt", out_sample_fmt, 0);
+
+        qDebug() << "SwrContext 配置 - 输入: " << m_channels << "通道, " << m_sampleRate << "Hz, 格式" << m_sampleFormat;
+        qDebug() << "SwrContext 配置 - 输出: " << out_channels << "通道, " << out_sample_rate << "Hz, 格式" << out_sample_fmt;
 
         if (swr_init(m_swrCtx) < 0)
         {
             m_errorString = "无法初始化 SwrContext";
+            qDebug() << "SwrContext 初始化失败: " << m_errorString.c_str();
             swr_free(&m_swrCtx);
             cleanup();
             return false;
         }
+
+        qDebug() << "SwrContext 初始化成功";
 
         return true;
     }

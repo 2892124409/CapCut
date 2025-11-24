@@ -21,6 +21,9 @@ namespace VideoCreator
         // 解码图片
         FFmpegUtils::AvFramePtr decode();
 
+        // 解码并缓存图片（避免重复解码）
+        FFmpegUtils::AvFramePtr decodeAndCache();
+
         // 缩放图片到指定尺寸
         FFmpegUtils::AvFramePtr scaleToSize(FFmpegUtils::AvFramePtr& frame, int targetWidth, int targetHeight, AVPixelFormat targetFormat = AV_PIX_FMT_YUV420P);
 

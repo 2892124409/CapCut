@@ -58,9 +58,12 @@ namespace VideoCreator
 
     bool RenderEngine::render()
     {
+        qDebug() << "开始渲染所有场景，总共" << m_config.scenes.size() << "个场景";
+        
         for (size_t i = 0; i < m_config.scenes.size(); ++i)
         {
             const auto &currentScene = m_config.scenes[i];
+            qDebug() << "处理场景" << i << ": ID=" << currentScene.id << ", 类型=" << (currentScene.type == SceneType::TRANSITION ? "转场" : "普通");
 
             if (currentScene.type == SceneType::TRANSITION)
             {
@@ -71,6 +74,7 @@ namespace VideoCreator
                 }
                 const auto &fromScene = m_config.scenes[i - 1];
                 const auto &toScene = m_config.scenes[i + 1];
+                qDebug() << "渲染转场: 从场景" << fromScene.id << "到场景" << toScene.id;
                 if (!renderTransition(currentScene, fromScene, toScene))
                 {
                     return false;
@@ -78,13 +82,11 @@ namespace VideoCreator
             }
             else
             {
-                // 对于非转场场景，我们只在它不是转场的 "to" 场景时才渲染
-                if (i == 0 || m_config.scenes[i - 1].type != SceneType::TRANSITION)
+                // 渲染所有普通场景，包括转场后的场景
+                qDebug() << "渲染普通场景: " << currentScene.id;
+                if (!renderScene(currentScene))
                 {
-                    if (!renderScene(currentScene))
-                    {
-                        return false;
-                    }
+                    return false;
                 }
             }
         }
@@ -282,8 +284,11 @@ namespace VideoCreator
     bool RenderEngine::renderScene(const SceneConfig &scene)
     {
         qDebug() << "渲染场景: " << scene.id << " (" << scene.duration << "秒)";
+        qDebug() << "场景资源 - 图片: " << scene.resources.image.path.c_str();
+        qDebug() << "场景资源 - 音频: " << scene.resources.audio.path.c_str();
 
         int totalFrames = static_cast<int>(scene.duration * m_config.project.fps);
+        qDebug() << "场景总帧数: " << totalFrames;
 
         ImageDecoder imageDecoder;
         if (!scene.resources.image.path.empty())
@@ -324,7 +329,8 @@ namespace VideoCreator
             FFmpegUtils::AvFramePtr videoFrame;
             if (imageDecoder.getWidth() > 0)
             {
-                videoFrame = imageDecoder.decode();
+                // 使用缓存解码，避免重复解码同一帧
+                videoFrame = imageDecoder.decodeAndCache();
                 if (!videoFrame)
                 {
                     videoFrame = generateTestFrame(m_frameCount, m_config.project.width, m_config.project.height);
