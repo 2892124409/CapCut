@@ -36,7 +36,22 @@ namespace VideoCreator
         // 计算总帧数用于进度报告
         double totalDuration = 0;
         for(const auto& scene : m_config.scenes) {
-            totalDuration += scene.duration;
+            if (!scene.resources.audio.path.empty()) {
+                AudioDecoder tempAudioDecoder;
+                if (tempAudioDecoder.open(scene.resources.audio.path)) {
+                    double audioDuration = tempAudioDecoder.getDuration();
+                    if (audioDuration > 0) {
+                        totalDuration += audioDuration;
+                    } else {
+                        totalDuration += scene.duration; // Fallback to scene duration
+                    }
+                    tempAudioDecoder.close();
+                } else {
+                    totalDuration += scene.duration; // Fallback if audio can't be opened
+                }
+            } else {
+                totalDuration += scene.duration;
+            }
         }
         m_totalProjectFrames = totalDuration * m_config.project.fps;
 
