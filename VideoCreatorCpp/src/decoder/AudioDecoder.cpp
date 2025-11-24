@@ -227,12 +227,57 @@ namespace VideoCreator
             qDebug() << "警告: 音频帧缺少PTS值";
         }
     
-        return 1; // Success
-    }    
-    void AudioDecoder::close()
-    {
-        cleanup();
-    }
+            return 1; // Success
+    
+        }
+    
+        
+    
+        double AudioDecoder::getDuration() const
+    
+        {
+    
+            if (!m_formatContext || m_audioStreamIndex < 0) {
+    
+                return 0.0;
+    
+            }
+    
+            int64_t duration_ts = m_formatContext->streams[m_audioStreamIndex]->duration;
+    
+            if (duration_ts == AV_NOPTS_VALUE) {
+    
+                // Fallback to container duration if stream duration is unknown
+    
+                duration_ts = m_formatContext->duration;
+    
+            }
+    
+        
+    
+            if (duration_ts != AV_NOPTS_VALUE) {
+    
+                return (double)duration_ts * av_q2d(m_formatContext->streams[m_audioStreamIndex]->time_base);
+    
+            }
+    
+            
+    
+            // As a last resort, return 0 if no duration can be determined.
+    
+            return 0.0;
+    
+        }
+    
+        
+    
+        void AudioDecoder::close()
+    
+        {
+    
+            cleanup();
+    
+        }
 
     void AudioDecoder::cleanup()
     {

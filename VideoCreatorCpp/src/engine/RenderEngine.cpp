@@ -206,8 +206,17 @@ namespace VideoCreator
 
         EffectProcessor effectProcessor;
         effectProcessor.initialize(m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P);
+    
+        double sceneDuration = scene.duration;
+        if (audioAvailable) {
+            double audioDuration = audioDecoder.getDuration();
+            if (audioDuration > 0) {
+                sceneDuration = audioDuration;
+                 qDebug() << "场景时长已同步到音频时长:" << sceneDuration << "秒";
+            }
+        }
 
-        int totalVideoFramesInScene = static_cast<int>(scene.duration * m_config.project.fps);
+        int totalVideoFramesInScene = static_cast<int>(sceneDuration * m_config.project.fps);
         int startFrameCount = m_frameCount;
 
         while (m_frameCount < startFrameCount + totalVideoFramesInScene)

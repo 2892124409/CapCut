@@ -26,8 +26,14 @@ namespace VideoCreator
     // 跳转到指定时间戳 (秒)
     bool seek(double timestamp);
 
-    // 关闭解码器并释放资源
-    void close();
+        // 获取音频采样格式
+        AVSampleFormat getSampleFormat() const { return m_sampleFormat; }
+
+        // 获取音频时长（秒）
+        double getDuration() const;
+
+        // 关闭解码器
+        void close();
 
         // 获取错误信息
         std::string getErrorString() const { return m_errorString; }
