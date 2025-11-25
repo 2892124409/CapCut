@@ -10,9 +10,15 @@
 namespace VideoCreator
 {
 
+    // Helper to generate FFmpeg error messages
+    static std::string format_ffmpeg_error(int ret, const std::string& message) {
+        char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
+        av_strerror(ret, errbuf, AV_ERROR_MAX_STRING_SIZE);
+        return message + ": " + errbuf + " (code " + std::to_string(ret) + ")";
+    }
+
     RenderEngine::RenderEngine()
-        : m_outputContext(nullptr), m_videoCodecContext(nullptr), m_audioCodecContext(nullptr),
-          m_videoStream(nullptr), m_audioStream(nullptr), m_audioFifo(nullptr), m_frameCount(0), m_audioSamplesCount(0), m_progress(0),
+        : m_videoStream(nullptr), m_audioStream(nullptr), m_audioFifo(nullptr), m_frameCount(0), m_audioSamplesCount(0), m_progress(0),
           m_totalProjectFrames(0), m_lastReportedProgress(-1)
     {
     }
@@ -22,7 +28,6 @@ namespace VideoCreator
         if (m_audioFifo) {
             av_audio_fifo_free(m_audioFifo);
         }
-        cleanup();
     }
 
     bool RenderEngine::initialize(const ProjectConfig &config)
@@ -61,8 +66,9 @@ namespace VideoCreator
              qDebug() << "音频流创建失败，将生成无声视频";
         }
 
-        if (avformat_write_header(m_outputContext, nullptr) < 0) {
-            m_errorString = "写入文件头失败";
+        int ret = avformat_write_header(m_outputContext.get(), nullptr);
+        if (ret < 0) {
+            m_errorString = format_ffmpeg_error(ret, "写入文件头失败");
             return false;
         }
 
@@ -98,11 +104,12 @@ namespace VideoCreator
             if (!flushAudio()) return false;
         }
 
-        if (!flushEncoder(m_videoCodecContext, m_videoStream)) return false;
-        if (!flushEncoder(m_audioCodecContext, m_audioStream)) return false;
+        if (!flushEncoder(m_videoCodecContext.get(), m_videoStream)) return false;
+        if (!flushEncoder(m_audioCodecContext.get(), m_audioStream)) return false;
 
-        if (av_write_trailer(m_outputContext) < 0) {
-            m_errorString = "写入文件尾失败";
+        int ret = av_write_trailer(m_outputContext.get());
+        if (ret < 0) {
+            m_errorString = format_ffmpeg_error(ret, "写入文件尾失败");
             return false;
         }
 
@@ -112,13 +119,18 @@ namespace VideoCreator
 
     bool RenderEngine::createOutputContext()
     {
-        if (avformat_alloc_output_context2(&m_outputContext, nullptr, nullptr, m_config.project.output_path.c_str()) < 0) {
-            m_errorString = "创建输出上下文失败";
+        AVFormatContext* temp_ctx = nullptr;
+        int ret = avformat_alloc_output_context2(&temp_ctx, nullptr, nullptr, m_config.project.output_path.c_str());
+        if (ret < 0) {
+            m_errorString = format_ffmpeg_error(ret, "创建输出上下文失败");
             return false;
         }
+        m_outputContext.reset(temp_ctx);
+
         if (!(m_outputContext->oformat->flags & AVFMT_NOFILE)) {
-            if (avio_open(&m_outputContext->pb, m_config.project.output_path.c_str(), AVIO_FLAG_WRITE) < 0) {
-                m_errorString = "无法打开输出文件";
+            ret = avio_open(&m_outputContext->pb, m_config.project.output_path.c_str(), AVIO_FLAG_WRITE);
+            if (ret < 0) {
+                m_errorString = format_ffmpeg_error(ret, "无法打开输出文件");
                 return false;
             }
         }
@@ -132,33 +144,42 @@ namespace VideoCreator
             m_errorString = "找不到视频编码器: " + m_config.global_effects.video_encoding.codec;
             return false;
         }
-        m_videoStream = avformat_new_stream(m_outputContext, videoCodec);
+        m_videoStream = avformat_new_stream(m_outputContext.get(), videoCodec);
         if (!m_videoStream) {
             m_errorString = "创建视频流失败";
             return false;
         }
         m_videoStream->id = m_outputContext->nb_streams - 1;
-        m_videoCodecContext = avcodec_alloc_context3(videoCodec);
-        if (!m_videoCodecContext) {
+
+        AVCodecContext* temp_ctx = avcodec_alloc_context3(videoCodec);
+        if (!temp_ctx) {
             m_errorString = "创建视频编码器上下文失败";
             return false;
         }
+        m_videoCodecContext.reset(temp_ctx);
+
         m_videoCodecContext->width = m_config.project.width;
         m_videoCodecContext->height = m_config.project.height;
         m_videoCodecContext->time_base = {1, m_config.project.fps};
         m_videoCodecContext->framerate = {m_config.project.fps, 1};
         m_videoCodecContext->pix_fmt = AV_PIX_FMT_YUV420P;
         std::string bitrateStr = m_config.global_effects.video_encoding.bitrate;
+        // TODO: Add more robust bitrate parsing
         m_videoCodecContext->bit_rate = std::stoi(bitrateStr.substr(0, bitrateStr.length() - 1)) * 1000;
         m_videoCodecContext->gop_size = 12;
+
         av_opt_set(m_videoCodecContext->priv_data, "preset", m_config.global_effects.video_encoding.preset.c_str(), 0);
         av_opt_set_int(m_videoCodecContext->priv_data, "crf", m_config.global_effects.video_encoding.crf, 0);
-        if (avcodec_open2(m_videoCodecContext, videoCodec, nullptr) < 0) {
-            m_errorString = "打开视频编码器失败";
+
+        int ret = avcodec_open2(m_videoCodecContext.get(), videoCodec, nullptr);
+        if (ret < 0) {
+            m_errorString = format_ffmpeg_error(ret, "打开视频编码器失败");
             return false;
         }
-        if (avcodec_parameters_from_context(m_videoStream->codecpar, m_videoCodecContext) < 0) {
-            m_errorString = "复制视频流参数失败";
+
+        ret = avcodec_parameters_from_context(m_videoStream->codecpar, m_videoCodecContext.get());
+        if (ret < 0) {
+            m_errorString = format_ffmpeg_error(ret, "复制视频流参数失败");
             return false;
         }
         m_videoStream->time_base = m_videoCodecContext->time_base;
@@ -172,29 +193,36 @@ namespace VideoCreator
             m_errorString = "找不到音频编码器: " + m_config.global_effects.audio_encoding.codec;
             return false;
         }
-        m_audioStream = avformat_new_stream(m_outputContext, audioCodec);
+        m_audioStream = avformat_new_stream(m_outputContext.get(), audioCodec);
         if (!m_audioStream) {
             m_errorString = "创建音频流失败";
             return false;
         }
         m_audioStream->id = m_outputContext->nb_streams - 1;
-        m_audioCodecContext = avcodec_alloc_context3(audioCodec);
-        if (!m_audioCodecContext) {
+        
+        AVCodecContext* temp_ctx = avcodec_alloc_context3(audioCodec);
+        if (!temp_ctx) {
             m_errorString = "创建音频编码器上下文失败";
             return false;
         }
+        m_audioCodecContext.reset(temp_ctx);
+
         m_audioCodecContext->sample_fmt = AV_SAMPLE_FMT_FLTP;
         std::string bitrateStr = m_config.global_effects.audio_encoding.bitrate;
+        // TODO: Add more robust bitrate parsing
         m_audioCodecContext->bit_rate = std::stoi(bitrateStr.substr(0, bitrateStr.length() - 1)) * 1000;
         m_audioCodecContext->sample_rate = 44100;
         av_channel_layout_from_mask(&m_audioCodecContext->ch_layout, AV_CH_LAYOUT_STEREO);
         m_audioCodecContext->time_base = {1, m_audioCodecContext->sample_rate};
-        if (avcodec_open2(m_audioCodecContext, audioCodec, nullptr) < 0) {
-            m_errorString = "打开音频编码器失败";
+
+        int ret = avcodec_open2(m_audioCodecContext.get(), audioCodec, nullptr);
+        if (ret < 0) {
+            m_errorString = format_ffmpeg_error(ret, "打开音频编码器失败");
             return false;
         }
-        if (avcodec_parameters_from_context(m_audioStream->codecpar, m_audioCodecContext) < 0) {
-            m_errorString = "复制音频流参数失败";
+        ret = avcodec_parameters_from_context(m_audioStream->codecpar, m_audioCodecContext.get());
+        if (ret < 0) {
+            m_errorString = format_ffmpeg_error(ret, "复制音频流参数失败");
             return false;
         }
         m_audioFifo = av_audio_fifo_alloc(m_audioCodecContext->sample_fmt, m_audioCodecContext->ch_layout.nb_channels, 1);
@@ -261,19 +289,25 @@ namespace VideoCreator
                     return false;
                 }
                 videoFrame->pts = m_frameCount;
-                if (avcodec_send_frame(m_videoCodecContext, videoFrame.get()) < 0) {
-                    m_errorString = "发送视频帧到编码器失败";
+                int ret = avcodec_send_frame(m_videoCodecContext.get(), videoFrame.get());
+                if (ret < 0) {
+                    m_errorString = format_ffmpeg_error(ret, "发送视频帧到编码器失败");
                     return false;
                 }
                 auto packet = FFmpegUtils::createAvPacket();
-                while (avcodec_receive_packet(m_videoCodecContext, packet.get()) == 0) {
+                while ((ret = avcodec_receive_packet(m_videoCodecContext.get(), packet.get())) == 0) {
                     packet->stream_index = m_videoStream->index;
                     av_packet_rescale_ts(packet.get(), m_videoCodecContext->time_base, m_videoStream->time_base);
-                    if (av_interleaved_write_frame(m_outputContext, packet.get()) < 0) {
-                        m_errorString = "写入视频包失败";
+                    ret = av_interleaved_write_frame(m_outputContext.get(), packet.get());
+                    if (ret < 0) {
+                        m_errorString = format_ffmpeg_error(ret, "写入视频包失败");
                         return false;
                     }
                     av_packet_unref(packet.get());
+                }
+                if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF) {
+                     m_errorString = format_ffmpeg_error(ret, "从编码器接收视频包失败");
+                     return false;
                 }
                 m_frameCount++;
                 updateAndReportProgress();
@@ -302,8 +336,14 @@ namespace VideoCreator
                         audioFrame->ch_layout = m_audioCodecContext->ch_layout;
                         audioFrame->format = m_audioCodecContext->sample_fmt;
                         audioFrame->sample_rate = m_audioCodecContext->sample_rate;
-                        if (av_frame_get_buffer(audioFrame.get(), 0) < 0 || av_frame_make_writable(audioFrame.get()) < 0) {
-                            m_errorString = "为静音帧分配缓冲区失败";
+                        int ret = av_frame_get_buffer(audioFrame.get(), 0);
+                        if (ret < 0) {
+                            m_errorString = format_ffmpeg_error(ret, "为静音帧分配缓冲区失败");
+                            return false;
+                        }
+                        ret = av_frame_make_writable(audioFrame.get());
+                        if (ret < 0) {
+                            m_errorString = format_ffmpeg_error(ret, "使静音帧可写失败");
                             return false;
                         }
                         av_samples_set_silence(audioFrame->data, 0, audioFrame->nb_samples, audioFrame->ch_layout.nb_channels, (AVSampleFormat)audioFrame->format);
@@ -355,20 +395,27 @@ namespace VideoCreator
                 return false;
             }
             blendedFrame->pts = m_frameCount;
-            if (avcodec_send_frame(m_videoCodecContext, blendedFrame.get()) < 0) {
-                m_errorString = "发送转场帧到编码器失败";
+            int ret = avcodec_send_frame(m_videoCodecContext.get(), blendedFrame.get());
+            if (ret < 0) {
+                m_errorString = format_ffmpeg_error(ret, "发送转场帧到编码器失败");
                 return false;
             }
             auto packet = FFmpegUtils::createAvPacket();
-            while (avcodec_receive_packet(m_videoCodecContext, packet.get()) >= 0) {
+            while ((ret = avcodec_receive_packet(m_videoCodecContext.get(), packet.get())) >= 0) {
                 packet->stream_index = m_videoStream->index;
                 av_packet_rescale_ts(packet.get(), m_videoCodecContext->time_base, m_videoStream->time_base);
-                if (av_interleaved_write_frame(m_outputContext, packet.get()) < 0) {
-                    m_errorString = "写入转场视频包失败";
+                ret = av_interleaved_write_frame(m_outputContext.get(), packet.get());
+                if (ret < 0) {
+                    m_errorString = format_ffmpeg_error(ret, "写入转场视频包失败");
                     return false;
                 }
                 av_packet_unref(packet.get());
             }
+            if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF) {
+                m_errorString = format_ffmpeg_error(ret, "从编码器接收转场包失败");
+                return false;
+            }
+
             if (m_audioStream) {
                 double video_time_in_scene = (double)(frameIndex + 1) / m_config.project.fps;
                 double audio_time_in_scene = (double)(m_audioSamplesCount - startAudioSampleCount) / m_audioCodecContext->sample_rate;
@@ -382,8 +429,14 @@ namespace VideoCreator
                     audioFrame->format = m_audioCodecContext->sample_fmt;
                     audioFrame->sample_rate = m_audioCodecContext->sample_rate;
 
-                    if (av_frame_get_buffer(audioFrame.get(), 0) < 0 || av_frame_make_writable(audioFrame.get()) < 0) {
-                        m_errorString = "为静音帧分配缓冲区失败 (Transition)";
+                    ret = av_frame_get_buffer(audioFrame.get(), 0);
+                    if (ret < 0) {
+                         m_errorString = format_ffmpeg_error(ret, "为静音帧分配缓冲区失败 (Transition)");
+                         return false;
+                    }
+                    ret = av_frame_make_writable(audioFrame.get());
+                     if (ret < 0) {
+                        m_errorString = format_ffmpeg_error(ret, "使静音帧可写失败 (Transition)");
                         return false;
                     }
                     av_samples_set_silence(audioFrame->data, 0, audioFrame->nb_samples, audioFrame->ch_layout.nb_channels, (AVSampleFormat)audioFrame->format);
@@ -426,9 +479,10 @@ namespace VideoCreator
     
     bool RenderEngine::sendBufferedAudioFrames()
     {
-        if (!m_audioFifo || !m_audioCodecContext) return false;
+        if (!m_audioFifo || !m_audioCodecContext) return true; // Return true if no audio configured
         const int frame_size = m_audioCodecContext->frame_size;
         if (frame_size <= 0) return true;
+
         while (av_audio_fifo_size(m_audioFifo) >= frame_size)
         {
             auto frame = FFmpegUtils::createAvFrame();
@@ -436,8 +490,9 @@ namespace VideoCreator
             frame->ch_layout = m_audioCodecContext->ch_layout;
             frame->format = m_audioCodecContext->sample_fmt;
             frame->sample_rate = m_audioCodecContext->sample_rate;
-            if (av_frame_get_buffer(frame.get(), 0) < 0) {
-                m_errorString = "为音频帧分配缓冲区失败 (FIFO)";
+            int ret = av_frame_get_buffer(frame.get(), 0);
+            if (ret < 0) {
+                m_errorString = format_ffmpeg_error(ret, "为音频帧分配缓冲区失败 (FIFO)");
                 return false;
             }
             if (av_audio_fifo_read(m_audioFifo, (void**)frame->data, frame_size) < 0) {
@@ -446,19 +501,25 @@ namespace VideoCreator
             }
             frame->pts = m_audioSamplesCount;
             m_audioSamplesCount += frame->nb_samples;
-            if (avcodec_send_frame(m_audioCodecContext, frame.get()) < 0) {
-                m_errorString = "发送音频帧到编码器失败 (FIFO)";
+            ret = avcodec_send_frame(m_audioCodecContext.get(), frame.get());
+            if (ret < 0) {
+                m_errorString = format_ffmpeg_error(ret, "发送音频帧到编码器失败 (FIFO)");
                 return false;
             }
             auto packet = FFmpegUtils::createAvPacket();
-            while (avcodec_receive_packet(m_audioCodecContext, packet.get()) == 0) {
+            while ((ret = avcodec_receive_packet(m_audioCodecContext.get(), packet.get())) == 0) {
                 packet->stream_index = m_audioStream->index;
                 av_packet_rescale_ts(packet.get(), m_audioCodecContext->time_base, m_audioStream->time_base);
-                if (av_interleaved_write_frame(m_outputContext, packet.get()) < 0) {
-                    m_errorString = "写入音频包失败 (FIFO)";
+                ret = av_interleaved_write_frame(m_outputContext.get(), packet.get());
+                if (ret < 0) {
+                    m_errorString = format_ffmpeg_error(ret, "写入音频包失败 (FIFO)");
                     return false;
                 }
                 av_packet_unref(packet.get());
+            }
+             if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF) {
+                m_errorString = format_ffmpeg_error(ret, "从编码器接收音频包失败 (FIFO)");
+                return false;
             }
         }
         return true;
@@ -477,9 +538,15 @@ namespace VideoCreator
             silenceFrame->ch_layout = m_audioCodecContext->ch_layout;
             silenceFrame->format = m_audioCodecContext->sample_fmt;
             silenceFrame->sample_rate = m_audioCodecContext->sample_rate;
-            if (av_frame_get_buffer(silenceFrame.get(), 0) < 0 || av_frame_make_writable(silenceFrame.get()) < 0) {
-                m_errorString = "为静音帧分配缓冲区失败 (Flush)";
+            int ret = av_frame_get_buffer(silenceFrame.get(), 0);
+            if (ret < 0) {
+                m_errorString = format_ffmpeg_error(ret, "为静音帧分配缓冲区失败 (Flush)");
                 return false;
+            }
+            ret = av_frame_make_writable(silenceFrame.get());
+            if(ret < 0) {
+                 m_errorString = format_ffmpeg_error(ret, "使静音帧可写失败 (Flush)");
+                 return false;
             }
             av_samples_set_silence(silenceFrame->data, 0, silence_to_add, silenceFrame->ch_layout.nb_channels, (AVSampleFormat)silenceFrame->format);
             av_audio_fifo_write(m_audioFifo, (void**)silenceFrame->data, silence_to_add);
@@ -487,31 +554,14 @@ namespace VideoCreator
         return sendBufferedAudioFrames();
     }
 
-    void RenderEngine::cleanup()
-    {
-        if (m_videoCodecContext) {
-            avcodec_free_context(&m_videoCodecContext);
-            m_videoCodecContext = nullptr;
-        }
-        if (m_audioCodecContext) {
-            avcodec_free_context(&m_audioCodecContext);
-            m_audioCodecContext = nullptr;
-        }
-        if (m_outputContext) {
-            if (!(m_outputContext->oformat->flags & AVFMT_NOFILE)) {
-                avio_closep(&m_outputContext->pb);
-            }
-            avformat_free_context(m_outputContext);
-            m_outputContext = nullptr;
-        }
-    }
+
 
     bool RenderEngine::flushEncoder(AVCodecContext *codecCtx, AVStream *stream)
     {
         if (!codecCtx || !stream) return true;
         int ret = avcodec_send_frame(codecCtx, nullptr);
         if (ret < 0 && ret != AVERROR_EOF) {
-            m_errorString = "发送空帧到编码器以 flush 失败";
+            m_errorString = format_ffmpeg_error(ret, "发送空帧到编码器以 flush 失败");
             return false;
         }
         auto packet = FFmpegUtils::createAvPacket();
@@ -520,13 +570,14 @@ namespace VideoCreator
             ret = avcodec_receive_packet(codecCtx, packet.get());
             if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
             if (ret < 0) {
-                m_errorString = "从编码器接收包失败 (flush)";
+                m_errorString = format_ffmpeg_error(ret, "从编码器接收包失败 (flush)");
                 return false;
             }
             packet->stream_index = stream->index;
             av_packet_rescale_ts(packet.get(), codecCtx->time_base, stream->time_base);
-            if (av_interleaved_write_frame(m_outputContext, packet.get()) < 0) {
-                m_errorString = "写入包失败 (flush)";
+            ret = av_interleaved_write_frame(m_outputContext.get(), packet.get());
+            if (ret < 0) {
+                m_errorString = format_ffmpeg_error(ret, "写入包失败 (flush)");
                 return false;
             }
             av_packet_unref(packet.get());

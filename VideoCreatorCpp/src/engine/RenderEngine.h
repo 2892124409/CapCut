@@ -6,6 +6,8 @@
 #include "model/ProjectConfig.h"
 #include "ffmpeg_utils/FFmpegHeaders.h"
 #include "ffmpeg_utils/AvFrameWrapper.h"
+#include "ffmpeg_utils/AvFormatContextWrapper.h"
+#include "ffmpeg_utils/AvCodecContextWrapper.h"
 
 namespace VideoCreator
 {
@@ -63,16 +65,13 @@ namespace VideoCreator
         // 更新并报告进度
         void updateAndReportProgress();
 
-        // 清理资源
-        void cleanup();
-
         // flush 编码器剩余包
         bool flushEncoder(AVCodecContext *codecCtx, AVStream *stream);
 
         // FFmpeg资源
-        AVFormatContext *m_outputContext;
-        AVCodecContext *m_videoCodecContext;
-        AVCodecContext *m_audioCodecContext;
+        FFmpegUtils::AvFormatContextPtr m_outputContext;
+        FFmpegUtils::AvCodecContextPtr m_videoCodecContext;
+        FFmpegUtils::AvCodecContextPtr m_audioCodecContext;
         AVStream *m_videoStream;
         AVStream *m_audioStream;
         AVAudioFifo *m_audioFifo;
