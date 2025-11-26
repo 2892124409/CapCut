@@ -247,9 +247,13 @@ namespace VideoCreator
             qDebug() << "无法打开音频: " << audioDecoder.getErrorString();
         }
 
-        EffectProcessor effectProcessor;
-        effectProcessor.initialize(m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P);
-    
+        if (audioAvailable) {
+            if (!audioDecoder.applyVolumeEffect(scene)) {
+                m_errorString = "应用音量效果失败: " + audioDecoder.getErrorString();
+                return false;
+            }
+        }
+
         double sceneDuration = scene.duration;
         if (audioAvailable) {
             double audioDuration = audioDecoder.getDuration();
@@ -260,6 +264,21 @@ namespace VideoCreator
         }
 
         int totalVideoFramesInScene = static_cast<int>(sceneDuration * m_config.project.fps);
+        if (totalVideoFramesInScene <= 0) {
+            qDebug() << "场景 " << scene.id << " 时长为0，跳过渲染。";
+            return true;
+        }
+
+        EffectProcessor effectProcessor;
+        effectProcessor.initialize(m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P);
+
+        if (scene.effects.ken_burns.enabled) {
+            if (!effectProcessor.startKenBurnsEffect(scene.effects.ken_burns, totalVideoFramesInScene)) {
+                m_errorString = "初始化Ken Burns特效失败: " + effectProcessor.getErrorString();
+                return false;
+            }
+        }
+    
         int startFrameCount = m_frameCount;
 
         while (m_frameCount < startFrameCount + totalVideoFramesInScene)
@@ -269,7 +288,6 @@ namespace VideoCreator
 
             if (video_time <= audio_time) {
                 // --- VIDEO PART ---
-                double progress = static_cast<double>(m_frameCount - startFrameCount) / totalVideoFramesInScene;
                 FFmpegUtils::AvFramePtr videoFrame;
                 if (imageDecoder.getWidth() > 0) {
                     videoFrame = imageDecoder.decodeAndCache();
@@ -281,13 +299,21 @@ namespace VideoCreator
                 if (!videoFrame) {
                     videoFrame = generateTestFrame(m_frameCount, m_config.project.width, m_config.project.height);
                 }
-                if (scene.effects.ken_burns.enabled) {
-                    videoFrame = effectProcessor.applyKenBurns(videoFrame.get(), scene.effects.ken_burns, progress);
+                
+                // Apply the initialized filter
+                auto filteredFrame = effectProcessor.applyFilter(videoFrame.get());
+                if (filteredFrame) {
+                    videoFrame = std::move(filteredFrame);
+                } else if (!effectProcessor.getErrorString().empty()) {
+                    m_errorString = "应用特效失败: " + effectProcessor.getErrorString();
+                    return false;
                 }
+
                 if (!videoFrame) {
                     m_errorString = "生成或处理视频帧失败";
                     return false;
                 }
+
                 videoFrame->pts = m_frameCount;
                 int ret = avcodec_send_frame(m_videoCodecContext.get(), videoFrame.get());
                 if (ret < 0) {

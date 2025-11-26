@@ -25,13 +25,10 @@ namespace VideoCreator
         return true;
     }
 
-    FFmpegUtils::AvFramePtr EffectProcessor::applyKenBurns(const AVFrame *inputFrame,
-                                                           const KenBurnsEffect &effect,
-                                                           double progress)
+    bool EffectProcessor::startKenBurnsEffect(const KenBurnsEffect& effect, int total_frames)
     {
-        if (!inputFrame || !effect.enabled)
-        {
-            return FFmpegUtils::copyAvFrame(inputFrame);
+        if (!effect.enabled) {
+            return true; // Nothing to do
         }
 
         KenBurnsEffect localEffect = effect; // Make a mutable copy
@@ -44,54 +41,56 @@ namespace VideoCreator
                 localEffect.end_scale = 1.2;
                 localEffect.start_x = 0;
                 localEffect.start_y = 0;
-                localEffect.end_x = - (inputFrame->width * (localEffect.end_scale - 1.0)) / 2;
-                localEffect.end_y = - (inputFrame->height * (localEffect.end_scale - 1.0)) / 2;
+                localEffect.end_x = - (m_width * (localEffect.end_scale - 1.0)) / 2;
+                localEffect.end_y = - (m_height * (localEffect.end_scale - 1.0)) / 2;
             } else if (localEffect.preset == "zoom_out") {
                 localEffect.start_scale = 1.2;
                 localEffect.end_scale = 1.0;
-                localEffect.start_x = - (inputFrame->width * (localEffect.start_scale - 1.0)) / 2;
-                localEffect.start_y = - (inputFrame->height * (localEffect.start_scale - 1.0)) / 2;
+                localEffect.start_x = - (m_width * (localEffect.start_scale - 1.0)) / 2;
+                localEffect.start_y = - (m_height * (localEffect.start_scale - 1.0)) / 2;
                 localEffect.end_x = 0;
                 localEffect.end_y = 0;
             } else if (localEffect.preset == "pan_right") {
                 localEffect.start_scale = pan_scale;
                 localEffect.end_scale = pan_scale;
-                localEffect.start_x = 0;
-                localEffect.end_x = - (inputFrame->width * pan_scale - inputFrame->width);
-                localEffect.start_y = - (inputFrame->height * pan_scale - inputFrame->height) / 2;
+                localEffect.start_x = - (m_width * pan_scale - m_width);
+                localEffect.end_x = 0;
+                localEffect.start_y = - (m_height * pan_scale - m_height) / 2;
                 localEffect.end_y = localEffect.start_y;
             } else if (localEffect.preset == "pan_left") {
                 localEffect.start_scale = pan_scale;
                 localEffect.end_scale = pan_scale;
-                localEffect.start_x = - (inputFrame->width * pan_scale - inputFrame->width);
-                localEffect.end_x = 0;
-                localEffect.start_y = - (inputFrame->height * pan_scale - inputFrame->height) / 2;
+                localEffect.start_x = 0;
+                localEffect.end_x = - (m_width * pan_scale - m_width);
+                localEffect.start_y = - (m_height * pan_scale - m_height) / 2;
                 localEffect.end_y = localEffect.start_y;
             }
         }
-
+        
         std::stringstream ss;
         double start_x = localEffect.start_x;
         double start_y = localEffect.start_y;
         double start_scale = localEffect.start_scale > 0 ? localEffect.start_scale : 1.0;
-
+        
         double end_x = localEffect.end_x;
         double end_y = localEffect.end_y;
         double end_scale = localEffect.end_scale > 0 ? localEffect.end_scale : 1.0;
 
-        // Linear interpolation for current state
-        double current_scale = start_scale + (end_scale - start_scale) * progress;
-        double current_x = start_x + (end_x - start_x) * progress;
-        double current_y = start_y + (end_y - start_y) * progress;
-        
-        // The format for zoompan is `zoompan=z='<zoom>':x='<x>':y='<y>':d=<duration>:s=<size>`
-        ss << "zoompan=z=" << current_scale
-           << ":x=" << current_x
-           << ":y=" << current_y
-           << ":d=1:s=" << m_width << "x" << m_height;
+        // Build the filter string with expressions for FFmpeg to evaluate based on frame number ('on')
+        ss << "zoompan="
+           << "z='" << start_scale << "+(" << end_scale - start_scale << ")*on/" << total_frames << "':"
+           << "x='" << start_x << "+(" << end_x - start_x << ")*on/" << total_frames << "':"
+           << "y='" << start_y << "+(" << end_y - start_y << ")*on/" << total_frames << "':"
+           << "d=1:s=" << m_width << "x" << m_height;
 
-        if (!initFilterGraph(ss.str())) {
-            return nullptr;
+        return initFilterGraph(ss.str());
+    }
+
+    FFmpegUtils::AvFramePtr EffectProcessor::applyFilter(const AVFrame* inputFrame)
+    {
+        if (!m_filterGraph) {
+            // If no filter is set up (e.g. effect disabled), just copy the frame
+            return FFmpegUtils::copyAvFrame(inputFrame);
         }
 
         // Push the input frame into the filter graph
@@ -104,7 +103,11 @@ namespace VideoCreator
         auto filteredFrame = FFmpegUtils::createAvFrame();
         int ret = av_buffersink_get_frame(m_buffersinkContext, filteredFrame.get());
         if (ret < 0) {
-            m_errorString = "Error while receiving a frame from the filtergraph";
+            // AVERROR(EAGAIN) is expected, it means the filter needs more frames.
+            // AVERROR_EOF means the stream is finished.
+            if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF) {
+                m_errorString = "Error while receiving a frame from the filtergraph";
+            }
             return nullptr;
         }
         

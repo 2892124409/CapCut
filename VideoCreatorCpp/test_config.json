@@ -12,7 +12,8 @@
                     "path": "d:/CapCut/VideoCreatorCpp/assets/shot1.png"
                 },
                 "audio": {
-                    "path": "d:/CapCut/VideoCreatorCpp/assets/narration1.mp3"
+                    "path": "d:/CapCut/VideoCreatorCpp/assets/narration1.mp3",
+                    "volume": 0.5
                 }
             },
             "effects": {
@@ -42,6 +43,11 @@
                 "ken_burns": {
                     "enabled": true,
                     "preset": "pan_right"
+                },
+                "volume_mix": {
+                    "enabled": true,
+                    "fade_in": 1.0,
+                    "fade_out": 2.0
                 }
             }
         }

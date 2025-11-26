@@ -19,10 +19,11 @@ namespace VideoCreator
         // 初始化特效处理器
         bool initialize(int width, int height, AVPixelFormat format);
 
-        // 应用Ken Burns特效
-        FFmpegUtils::AvFramePtr applyKenBurns(const AVFrame *inputFrame,
-                                              const KenBurnsEffect &effect,
-                                              double progress);
+        // 为Ken Burns特效初始化滤镜
+        bool startKenBurnsEffect(const KenBurnsEffect& effect, int total_frames);
+
+        // 应用已初始化的滤镜
+        FFmpegUtils::AvFramePtr applyFilter(const AVFrame* inputFrame);
 
         // 应用淡入淡出转场
         FFmpegUtils::AvFramePtr applyCrossfade(const AVFrame *fromFrame,
@@ -63,9 +64,6 @@ namespace VideoCreator
         AVPixelFormat m_pixelFormat;
 
         std::string m_errorString;
-
-        // 创建Ken Burns滤镜字符串
-        std::string createKenBurnsFilterString(const KenBurnsEffect &effect, double progress);
 
         // 初始化滤镜图
         bool initFilterGraph(const std::string &filterDescription);
