@@ -299,7 +299,7 @@ namespace VideoCreator
             }
         }
 
-        int totalVideoFramesInScene = static_cast<int>(sceneDuration * m_config.project.fps);
+        int totalVideoFramesInScene = static_cast<int>(std::round(sceneDuration * m_config.project.fps));
         if (totalVideoFramesInScene <= 0) {
             qDebug() << "场景 " << scene.id << " 时长为0，跳过渲染。";
             return true;
@@ -430,7 +430,7 @@ namespace VideoCreator
     bool RenderEngine::renderTransition(const SceneConfig &transitionScene, const SceneConfig &fromScene, const SceneConfig &toScene)
     {
         int64_t startAudioSampleCount = m_audioSamplesCount;
-        int totalFrames = static_cast<int>(transitionScene.duration * m_config.project.fps);
+        int totalFrames = static_cast<int>(std::round(transitionScene.duration * m_config.project.fps));
         ImageDecoder fromDecoder, toDecoder;
         if (!fromDecoder.open(fromScene.resources.image.path) || !toDecoder.open(toScene.resources.image.path)) {
             m_errorString = "无法打开转场中的图片";

@@ -3,6 +3,7 @@
 #include <cmath>
 #include <algorithm>
 #include <locale>
+#include <iomanip> // For std::setprecision
 #include <atomic>
 
 namespace VideoCreator
@@ -47,38 +48,51 @@ namespace VideoCreator
 
         KenBurnsEffect params = effect;
 
-        if (!params.preset.empty()) {
-            float pan_scale = 1.1f;
-            if (params.preset == "zoom_in") {
-                params.start_scale = 1.0; params.end_scale = 1.2; params.start_x = 0; params.start_y = 0;
-                params.end_x = - (m_width * (params.end_scale - 1.0)) / 2;
-                params.end_y = - (m_height * (params.end_scale - 1.0)) / 2;
-            } else if (params.preset == "zoom_out") {
-                params.start_scale = 1.2; params.end_scale = 1.0;
-                params.start_x = - (m_width * (params.start_scale - 1.0)) / 2;
-                params.start_y = - (m_height * (params.start_scale - 1.0)) / 2;
-                params.end_x = 0; params.end_y = 0;
-            } else if (params.preset == "pan_right") {
-                params.start_scale = pan_scale; params.end_scale = pan_scale;
-                params.start_x = - (m_width * pan_scale - m_width); params.end_x = 0;
-                params.start_y = - (m_height * pan_scale - m_height) / 2; params.end_y = params.start_y;
-            } else if (params.preset == "pan_left") {
-                params.start_scale = pan_scale; params.end_scale = pan_scale;
-                params.start_x = 0; params.end_x = - (m_width * pan_scale - m_width);
-                params.start_y = - (m_height * pan_scale - m_height) / 2; params.end_y = params.start_y;
-            }
-        }
-
         std::stringstream ss;
         ss.imbue(std::locale("C"));
 
-        // Use 'on' (output frame number) for evaluation, as 't' is not available in zoompan.
-        // The interpolation is now based on the frame number relative to the total frames in the effect.
-        ss << "zoompan="
-           << "z='" << params.start_scale << "+(" << params.end_scale - params.start_scale << ")*on/" << total_frames << "':"
-           << "x='" << params.start_x << "+(" << params.end_x - params.start_x << ")*on/" << total_frames << "':"
-           << "y='" << params.start_y << "+(" << params.end_y - params.start_y << ")*on/" << total_frames << "':"
-           << "d=" << total_frames << ":s=" << m_width << "x" << m_height << ":fps=" << m_fps;
+        if (params.preset == "zoom_in" || params.preset == "zoom_out")
+        {
+            double start_z = (params.preset == "zoom_in") ? 1.0 : 1.2;
+            double end_z = (params.preset == "zoom_in") ? 1.2 : 1.0;
+            
+            std::stringstream zoom_ss;
+            zoom_ss << std::fixed << std::setprecision(10) << start_z << "+(" << (end_z - start_z) << ")*on/" << total_frames;
+            std::string zoom_expr = zoom_ss.str();
+
+            ss << "zoompan="
+               << "z='" << zoom_expr << "':"
+               << "d=" << total_frames << ":s=" << m_width << "x" << m_height << ":fps=" << m_fps;
+        }
+        else if (params.preset == "pan_right" || params.preset == "pan_left")
+        {
+            float pan_scale = 1.1f;
+            double start_x, end_x, start_y;
+
+            if (params.preset == "pan_right") {
+                start_x = 0;
+                end_x = m_width * (pan_scale - 1.0);
+            } else { // pan_left
+                start_x = m_width * (pan_scale - 1.0);
+                end_x = 0;
+            }
+            start_y = (m_height * (pan_scale - 1.0)) / 2;
+            
+            ss << "zoompan="
+               << "z='" << pan_scale << "':" // Zoom is constant for panning
+               << "x='" << start_x << "+(" << end_x - start_x << ")*on/" << total_frames << "':"
+               << "y='" << start_y << "':" // Y is constant for horizontal panning
+               << "d=" << total_frames << ":s=" << m_width << "x" << m_height << ":fps=" << m_fps;
+        }
+        else 
+        {
+            // Fallback for custom ken_burns or empty preset from config
+            ss << "zoompan="
+               << "z='" << params.start_scale << "+(" << params.end_scale - params.start_scale << ")*on/" << total_frames << "':"
+               << "x='" << params.start_x << "+(" << params.end_x - params.start_x << ")*on/" << total_frames << "':"
+               << "y='" << params.start_y << "+(" << params.end_y - params.start_y << ")*on/" << total_frames << "':"
+               << "d=" << total_frames << ":s=" << m_width << "x" << m_height << ":fps=" << m_fps;
+        }
 
         if (!initFilterGraph(ss.str())) {
             return false;

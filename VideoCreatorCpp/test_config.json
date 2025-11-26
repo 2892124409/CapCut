@@ -1,55 +1,62 @@
 {
     "project": {
-        "name": "勇敢猫咪",
-        "output_path": "d:/CapCut/VideoCreatorCpp/output/brave_cat.mp4"
+        "name": "特效测试-带音频",
+        "output_path": "d:/CapCut/VideoCreatorCpp/output/effects_test_audio.mp4"
     },
     "scenes": [
         {
+            "id": 1,
             "type": "image_scene",
-            "duration": 5.0,
             "resources": {
-                "image": {
-                    "path": "d:/CapCut/VideoCreatorCpp/assets/shot1.png"
-                },
-                "audio": {
-                    "path": "d:/CapCut/VideoCreatorCpp/assets/narration1.mp3",
-                    "volume": 0.5
-                }
+                "image": { "path": "d:/CapCut/VideoCreatorCpp/assets/shot1.png" },
+                "audio": { "path": "d:/CapCut/VideoCreatorCpp/assets/narration1.mp3" }
             },
-            "effects": {
-                "ken_burns": {
-                    "enabled": true,
-                    "preset": "zoom_in"
-                }
-            }
+            "effects": { "ken_burns": { "enabled": true, "preset": "zoom_in" } }
         },
         {
+            "id": 2,
             "type": "transition",
             "transition_type": "crossfade",
             "duration": 1.0
         },
         {
+            "id": 3,
             "type": "image_scene",
-            "duration": 6.0,
             "resources": {
-                "image": {
-                    "path": "d:/CapCut/VideoCreatorCpp/assets/shot2.png"
-                },
-                "audio": {
-                    "path": "d:/CapCut/VideoCreatorCpp/assets/narration2.mp3"
-                }
+                "image": { "path": "d:/CapCut/VideoCreatorCpp/assets/shot2.png" },
+                "audio": { "path": "d:/CapCut/VideoCreatorCpp/assets/narration2.mp3" }
             },
-            "effects": {
-                "ken_burns": {
-                    "enabled": true,
-                    "preset": "zoom_in"
-                },
-                "volume_mix": {
-                    "enabled": true,
-                    "fade_in": 1.0,
-                    "fade_out": 2.0
-                }
-            }
+            "effects": { "ken_burns": { "enabled": true, "preset": "zoom_out" } }
+        },
+        {
+            "id": 4,
+            "type": "transition",
+            "transition_type": "wipe",
+            "duration": 1.0
+        },
+        {
+            "id": 5,
+            "type": "image_scene",
+            "resources": {
+                "image": { "path": "d:/CapCut/VideoCreatorCpp/assets/shot1.png" },
+                "audio": { "path": "d:/CapCut/VideoCreatorCpp/assets/narration1.mp3" }
+            },
+            "effects": { "ken_burns": { "enabled": true, "preset": "pan_right" } }
+        },
+        {
+            "id": 6,
+            "type": "transition",
+            "transition_type": "slide",
+            "duration": 1.0
+        },
+        {
+            "id": 7,
+            "type": "image_scene",
+            "resources": {
+                "image": { "path": "d:/CapCut/VideoCreatorCpp/assets/shot2.png" },
+                "audio": { "path": "d:/CapCut/VideoCreatorCpp/assets/narration2.mp3" }
+            },
+            "effects": { "ken_burns": { "enabled": true, "preset": "pan_left" } }
         }
     ]
 }

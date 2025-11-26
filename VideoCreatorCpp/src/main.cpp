@@ -30,7 +30,16 @@ public:
         ConfigLoader loader;
         ProjectConfig config;
 
-        if (loader.loadFromFile("test_config.json", config))
+#ifdef PROJECT_SOURCE_DIR
+        // CMake passes the source dir path, converting backslashes to forward slashes
+        std::string config_path = std::string(PROJECT_SOURCE_DIR) + "/test_config.json";
+        qDebug() << "从源码目录加载配置文件:" << QString::fromStdString(config_path);
+#else
+        std::string config_path = "test_config.json";
+        qDebug() << "从当前工作目录加载配置文件:" << QString::fromStdString(config_path);
+#endif
+
+        if (loader.loadFromFile(QString::fromStdString(config_path), config))
         {
             qDebug() << "配置文件加载成功!";
             printProjectInfo(config);

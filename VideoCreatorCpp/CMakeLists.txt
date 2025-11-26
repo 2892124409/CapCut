@@ -66,14 +66,12 @@ target_include_directories(VideoCreatorCpp PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/common
 )
 
+# 向C++代码传递源码目录路径，以便直接读取配置文件
+file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}" PROJECT_SOURCE_DIR_CMAKE)
+target_compile_definitions(VideoCreatorCpp PRIVATE PROJECT_SOURCE_DIR="${PROJECT_SOURCE_DIR_CMAKE}")
+
 # 复制资源文件
 file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/assets DESTINATION ${CMAKE_BINARY_DIR}/bin)
-# 项目示例配置文件 (仓库中为 test_config.json)
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test_config.json")
-    file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/test_config.json DESTINATION ${CMAKE_BINARY_DIR}/bin)
-else()
-    file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/config.json DESTINATION ${CMAKE_BINARY_DIR}/bin)
-endif()
 
 # 创建输出目录
 file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/bin/output)
