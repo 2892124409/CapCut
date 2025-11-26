@@ -17,6 +17,44 @@ namespace VideoCreator
         return message + ": " + errbuf + " (code " + std::to_string(ret) + ")";
     }
 
+    // Helper to parse bitrate strings (e.g., "5000k", "5M")
+    static int64_t parseBitrate(const std::string& bitrateStr) {
+        if (bitrateStr.empty()) {
+            return 0;
+        }
+        char last_char = bitrateStr.back();
+        std::string num_part = bitrateStr;
+        int64_t multiplier = 1;
+
+        if (last_char == 'k' || last_char == 'K') {
+            multiplier = 1000;
+            num_part.pop_back();
+        } else if (last_char == 'm' || last_char == 'M') {
+            multiplier = 1000000;
+            num_part.pop_back();
+        }
+
+        try {
+            // Trim whitespace from num_part before conversion
+            size_t first = num_part.find_first_not_of(" \t\n\r");
+            if (std::string::npos == first) {
+                 qDebug() << "Invalid bitrate value (only whitespace): " << bitrateStr.c_str();
+                 return 0;
+            }
+            size_t last = num_part.find_last_not_of(" \t\n\r");
+            num_part = num_part.substr(first, (last - first + 1));
+
+            return static_cast<int64_t>(std::stoll(num_part) * multiplier);
+        } catch (const std::invalid_argument& e) {
+            qDebug() << "Invalid bitrate value: " << bitrateStr.c_str();
+            return 0;
+        } catch (const std::out_of_range& e) {
+            qDebug() << "Bitrate value out of range: " << bitrateStr.c_str();
+            return 0;
+        }
+    }
+
+
     RenderEngine::RenderEngine()
         : m_videoStream(nullptr), m_audioStream(nullptr), m_audioFifo(nullptr), m_frameCount(0), m_audioSamplesCount(0), m_progress(0),
           m_totalProjectFrames(0), m_lastReportedProgress(-1)
@@ -164,8 +202,7 @@ namespace VideoCreator
         m_videoCodecContext->framerate = {m_config.project.fps, 1};
         m_videoCodecContext->pix_fmt = AV_PIX_FMT_YUV420P;
         std::string bitrateStr = m_config.global_effects.video_encoding.bitrate;
-        // TODO: Add more robust bitrate parsing
-        m_videoCodecContext->bit_rate = std::stoi(bitrateStr.substr(0, bitrateStr.length() - 1)) * 1000;
+        m_videoCodecContext->bit_rate = parseBitrate(bitrateStr);
         m_videoCodecContext->gop_size = 12;
 
         av_opt_set(m_videoCodecContext->priv_data, "preset", m_config.global_effects.video_encoding.preset.c_str(), 0);
@@ -209,8 +246,7 @@ namespace VideoCreator
 
         m_audioCodecContext->sample_fmt = AV_SAMPLE_FMT_FLTP;
         std::string bitrateStr = m_config.global_effects.audio_encoding.bitrate;
-        // TODO: Add more robust bitrate parsing
-        m_audioCodecContext->bit_rate = std::stoi(bitrateStr.substr(0, bitrateStr.length() - 1)) * 1000;
+        m_audioCodecContext->bit_rate = parseBitrate(bitrateStr);
         m_audioCodecContext->sample_rate = 44100;
         av_channel_layout_from_mask(&m_audioCodecContext->ch_layout, AV_CH_LAYOUT_STEREO);
         m_audioCodecContext->time_base = {1, m_audioCodecContext->sample_rate};
@@ -270,11 +306,23 @@ namespace VideoCreator
         }
 
         EffectProcessor effectProcessor;
-        effectProcessor.initialize(m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P);
+        effectProcessor.initialize(m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P, m_config.project.fps);
+        
+        FFmpegUtils::AvFramePtr sourceImageFrame;
+        if (imageDecoder.getWidth() > 0) {
+            sourceImageFrame = imageDecoder.decodeAndCache();
+             if (sourceImageFrame) {
+                auto scaledFrame = imageDecoder.scaleToSize(sourceImageFrame, m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P);
+                sourceImageFrame = scaledFrame ? std::move(scaledFrame) : std::move(sourceImageFrame);
+            }
+        }
+        if (!sourceImageFrame) {
+             sourceImageFrame = generateTestFrame(m_frameCount, m_config.project.width, m_config.project.height);
+        }
 
         if (scene.effects.ken_burns.enabled) {
-            if (!effectProcessor.startKenBurnsEffect(scene.effects.ken_burns, totalVideoFramesInScene)) {
-                m_errorString = "初始化Ken Burns特效失败: " + effectProcessor.getErrorString();
+            if (!effectProcessor.processKenBurnsEffect(scene.effects.ken_burns, sourceImageFrame.get(), totalVideoFramesInScene)) {
+                m_errorString = "处理Ken Burns特效序列失败: " + effectProcessor.getErrorString();
                 return false;
             }
         }
@@ -289,24 +337,18 @@ namespace VideoCreator
             if (video_time <= audio_time) {
                 // --- VIDEO PART ---
                 FFmpegUtils::AvFramePtr videoFrame;
-                if (imageDecoder.getWidth() > 0) {
-                    videoFrame = imageDecoder.decodeAndCache();
-                    if (videoFrame) {
-                        auto scaledFrame = imageDecoder.scaleToSize(videoFrame, m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P);
-                        videoFrame = scaledFrame ? std::move(scaledFrame) : std::move(videoFrame);
+
+                if (scene.effects.ken_burns.enabled) {
+                    int scene_frame_index = m_frameCount - startFrameCount;
+                    const AVFrame* kbFrame = effectProcessor.getKenBurnsFrame(scene_frame_index);
+                    if (kbFrame) {
+                        videoFrame = FFmpegUtils::copyAvFrame(kbFrame);
+                    } else {
+                        m_errorString = "获取Ken Burns缓存帧失败: " + effectProcessor.getErrorString();
+                        return false;
                     }
-                }
-                if (!videoFrame) {
-                    videoFrame = generateTestFrame(m_frameCount, m_config.project.width, m_config.project.height);
-                }
-                
-                // Apply the initialized filter
-                auto filteredFrame = effectProcessor.applyFilter(videoFrame.get());
-                if (filteredFrame) {
-                    videoFrame = std::move(filteredFrame);
-                } else if (!effectProcessor.getErrorString().empty()) {
-                    m_errorString = "应用特效失败: " + effectProcessor.getErrorString();
-                    return false;
+                } else {
+                    videoFrame = FFmpegUtils::copyAvFrame(sourceImageFrame.get());
                 }
 
                 if (!videoFrame) {
@@ -405,7 +447,7 @@ namespace VideoCreator
         if (scaledFromFrame) fromFrame = std::move(scaledFromFrame);
         if (scaledToFrame) toFrame = std::move(scaledToFrame);
         EffectProcessor effectProcessor;
-        effectProcessor.initialize(m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P);
+        effectProcessor.initialize(m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P, m_config.project.fps);
 
         for (int frameIndex = 0; frameIndex < totalFrames; ++frameIndex)
         {

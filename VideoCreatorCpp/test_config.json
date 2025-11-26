@@ -42,7 +42,7 @@
             "effects": {
                 "ken_burns": {
                     "enabled": true,
-                    "preset": "pan_right"
+                    "preset": "zoom_in"
                 },
                 "volume_mix": {
                     "enabled": true,

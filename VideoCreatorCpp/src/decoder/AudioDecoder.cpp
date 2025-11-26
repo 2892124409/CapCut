@@ -268,7 +268,11 @@ namespace VideoCreator
     
             if (response == AVERROR_EOF) {
                 if (m_effectsEnabled) {
-                    av_buffersrc_add_frame(m_bufferSrcCtx, nullptr); // 发送EOF到filter graph
+                    int add_frame_ret = av_buffersrc_add_frame(m_bufferSrcCtx, nullptr); // 发送EOF到filter graph
+                    if (add_frame_ret < 0) {
+                        m_errorString = "发送EOF到filter graph失败";
+                        return -1; // Indicate error
+                    }
                     auto filtered_frame = FFmpegUtils::createAvFrame();
                     int ret = av_buffersink_get_frame(m_bufferSinkCtx, filtered_frame.get());
                     if (ret == 0) {

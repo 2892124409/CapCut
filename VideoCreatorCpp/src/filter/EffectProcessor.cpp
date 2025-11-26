@@ -2,13 +2,18 @@
 #include <sstream>
 #include <cmath>
 #include <algorithm>
+#include <locale>
+#include <atomic>
 
 namespace VideoCreator
 {
 
+    // Use an atomic integer for a thread-safe, unique ID for filter instances.
+    static std::atomic<int> filter_instance_count(0);
+
     EffectProcessor::EffectProcessor()
-        : m_filterGraph(nullptr), m_buffersrcContext(nullptr), m_buffersrcContext2(nullptr), m_buffersinkContext(nullptr),
-          m_width(0), m_height(0), m_pixelFormat(AV_PIX_FMT_NONE)
+        : m_filterGraph(nullptr), m_buffersrcContext(nullptr), m_buffersinkContext(nullptr),
+          m_width(0), m_height(0), m_pixelFormat(AV_PIX_FMT_NONE), m_fps(0), m_kb_enabled(false)
     {
     }
 
@@ -17,160 +22,154 @@ namespace VideoCreator
         cleanup();
     }
 
-    bool EffectProcessor::initialize(int width, int height, AVPixelFormat format)
+    bool EffectProcessor::initialize(int width, int height, AVPixelFormat format, int fps)
     {
         m_width = width;
         m_height = height;
         m_pixelFormat = format;
+        m_fps = fps;
         return true;
     }
 
-    bool EffectProcessor::startKenBurnsEffect(const KenBurnsEffect& effect, int total_frames)
+    bool EffectProcessor::processKenBurnsEffect(const KenBurnsEffect& effect, const AVFrame* inputImage, int total_frames)
     {
-        if (!effect.enabled) {
-            return true; // Nothing to do
+        m_kb_enabled = effect.enabled;
+        if (!m_kb_enabled) {
+            return true;
+        }
+        if (!inputImage) {
+            m_errorString = "Input image for Ken Burns effect is null.";
+            return false;
+        }
+        if (total_frames <= 0) {
+            return true; 
         }
 
-        KenBurnsEffect localEffect = effect; // Make a mutable copy
+        KenBurnsEffect params = effect;
 
-        // Handle presets
-        if (!localEffect.preset.empty()) {
-            float pan_scale = 1.1f; // Scale for panning to have some room
-            if (localEffect.preset == "zoom_in") {
-                localEffect.start_scale = 1.0;
-                localEffect.end_scale = 1.2;
-                localEffect.start_x = 0;
-                localEffect.start_y = 0;
-                localEffect.end_x = - (m_width * (localEffect.end_scale - 1.0)) / 2;
-                localEffect.end_y = - (m_height * (localEffect.end_scale - 1.0)) / 2;
-            } else if (localEffect.preset == "zoom_out") {
-                localEffect.start_scale = 1.2;
-                localEffect.end_scale = 1.0;
-                localEffect.start_x = - (m_width * (localEffect.start_scale - 1.0)) / 2;
-                localEffect.start_y = - (m_height * (localEffect.start_scale - 1.0)) / 2;
-                localEffect.end_x = 0;
-                localEffect.end_y = 0;
-            } else if (localEffect.preset == "pan_right") {
-                localEffect.start_scale = pan_scale;
-                localEffect.end_scale = pan_scale;
-                localEffect.start_x = - (m_width * pan_scale - m_width);
-                localEffect.end_x = 0;
-                localEffect.start_y = - (m_height * pan_scale - m_height) / 2;
-                localEffect.end_y = localEffect.start_y;
-            } else if (localEffect.preset == "pan_left") {
-                localEffect.start_scale = pan_scale;
-                localEffect.end_scale = pan_scale;
-                localEffect.start_x = 0;
-                localEffect.end_x = - (m_width * pan_scale - m_width);
-                localEffect.start_y = - (m_height * pan_scale - m_height) / 2;
-                localEffect.end_y = localEffect.start_y;
+        if (!params.preset.empty()) {
+            float pan_scale = 1.1f;
+            if (params.preset == "zoom_in") {
+                params.start_scale = 1.0; params.end_scale = 1.2; params.start_x = 0; params.start_y = 0;
+                params.end_x = - (m_width * (params.end_scale - 1.0)) / 2;
+                params.end_y = - (m_height * (params.end_scale - 1.0)) / 2;
+            } else if (params.preset == "zoom_out") {
+                params.start_scale = 1.2; params.end_scale = 1.0;
+                params.start_x = - (m_width * (params.start_scale - 1.0)) / 2;
+                params.start_y = - (m_height * (params.start_scale - 1.0)) / 2;
+                params.end_x = 0; params.end_y = 0;
+            } else if (params.preset == "pan_right") {
+                params.start_scale = pan_scale; params.end_scale = pan_scale;
+                params.start_x = - (m_width * pan_scale - m_width); params.end_x = 0;
+                params.start_y = - (m_height * pan_scale - m_height) / 2; params.end_y = params.start_y;
+            } else if (params.preset == "pan_left") {
+                params.start_scale = pan_scale; params.end_scale = pan_scale;
+                params.start_x = 0; params.end_x = - (m_width * pan_scale - m_width);
+                params.start_y = - (m_height * pan_scale - m_height) / 2; params.end_y = params.start_y;
             }
         }
-        
+
         std::stringstream ss;
-        double start_x = localEffect.start_x;
-        double start_y = localEffect.start_y;
-        double start_scale = localEffect.start_scale > 0 ? localEffect.start_scale : 1.0;
-        
-        double end_x = localEffect.end_x;
-        double end_y = localEffect.end_y;
-        double end_scale = localEffect.end_scale > 0 ? localEffect.end_scale : 1.0;
+        ss.imbue(std::locale("C"));
 
-        // Build the filter string with expressions for FFmpeg to evaluate based on frame number ('on')
+        // Use 'on' (output frame number) for evaluation, as 't' is not available in zoompan.
+        // The interpolation is now based on the frame number relative to the total frames in the effect.
         ss << "zoompan="
-           << "z='" << start_scale << "+(" << end_scale - start_scale << ")*on/" << total_frames << "':"
-           << "x='" << start_x << "+(" << end_x - start_x << ")*on/" << total_frames << "':"
-           << "y='" << start_y << "+(" << end_y - start_y << ")*on/" << total_frames << "':"
-           << "d=1:s=" << m_width << "x" << m_height;
+           << "z='" << params.start_scale << "+(" << params.end_scale - params.start_scale << ")*on/" << total_frames << "':"
+           << "x='" << params.start_x << "+(" << params.end_x - params.start_x << ")*on/" << total_frames << "':"
+           << "y='" << params.start_y << "+(" << params.end_y - params.start_y << ")*on/" << total_frames << "':"
+           << "d=" << total_frames << ":s=" << m_width << "x" << m_height << ":fps=" << m_fps;
 
-        return initFilterGraph(ss.str());
-    }
-
-    FFmpegUtils::AvFramePtr EffectProcessor::applyFilter(const AVFrame* inputFrame)
-    {
-        if (!m_filterGraph) {
-            // If no filter is set up (e.g. effect disabled), just copy the frame
-            return FFmpegUtils::copyAvFrame(inputFrame);
+        if (!initFilterGraph(ss.str())) {
+            return false;
         }
 
-        // Push the input frame into the filter graph
-        if (av_buffersrc_add_frame_flags(m_buffersrcContext, (AVFrame*)inputFrame, AV_BUFFERSRC_FLAG_KEEP_REF) < 0) {
-            m_errorString = "Error while feeding the filtergraph";
-            return nullptr;
+        AVFrame* src_frame = av_frame_clone(inputImage);
+        if (!src_frame) {
+            m_errorString = "Failed to clone source image for filter.";
+            return false;
+        }
+        src_frame->pts = 0; // The timestamp for the single input image should be 0
+
+        if (av_buffersrc_add_frame(m_buffersrcContext, src_frame) < 0) {
+            m_errorString = "Error while feeding the source image to the filtergraph";
+            av_frame_free(&src_frame);
+            return false;
+        }
+        av_frame_free(&src_frame);
+
+        if (av_buffersrc_add_frame(m_buffersrcContext, nullptr) < 0) {
+             m_errorString = "Failed to signal EOF to Ken Burns filter source.";
+            return false;
         }
 
-        // Pull the filtered frame from the filter graph
-        auto filteredFrame = FFmpegUtils::createAvFrame();
-        int ret = av_buffersink_get_frame(m_buffersinkContext, filteredFrame.get());
-        if (ret < 0) {
-            // AVERROR(EAGAIN) is expected, it means the filter needs more frames.
-            // AVERROR_EOF means the stream is finished.
-            if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF) {
-                m_errorString = "Error while receiving a frame from the filtergraph";
+        m_kb_frames.clear();
+        for (int i = 0; i < total_frames; ++i) {
+            auto filteredFrame = FFmpegUtils::createAvFrame();
+            int ret = av_buffersink_get_frame(m_buffersinkContext, filteredFrame.get());
+            if (ret < 0) {
+                if (ret == AVERROR_EOF) break; 
+                char errbuf[AV_ERROR_MAX_STRING_SIZE];
+                av_strerror(ret, errbuf, sizeof(errbuf));
+                m_errorString = "Error while receiving a frame from the filtergraph: " + std::string(errbuf);
+                return false;
             }
-            return nullptr;
+            m_kb_frames.push_back(std::move(filteredFrame));
         }
-        
-        filteredFrame->pts = inputFrame->pts;
 
-        return filteredFrame;
+        if (m_kb_frames.size() != total_frames) {
+             m_errorString = "Generated frame count (" + std::to_string(m_kb_frames.size()) + ") does not match total_frames (" + std::to_string(total_frames) + ").";
+             return false;
+        }
+
+        return true;
     }
 
+    const AVFrame* EffectProcessor::getKenBurnsFrame(int frame_index) const
+    {
+        if (!m_kb_enabled) {
+            m_errorString = "Ken Burns effect is not enabled or processed.";
+            return nullptr;
+        }
+        if (frame_index < 0 || frame_index >= m_kb_frames.size()) {
+            m_errorString = "Frame index out of bounds for cached Ken Burns frames.";
+            return nullptr;
+        }
+        return m_kb_frames[frame_index].get();
+    }
 
     FFmpegUtils::AvFramePtr EffectProcessor::applyCrossfade(const AVFrame *fromFrame, const AVFrame *toFrame, double progress)
     {
-        if (!fromFrame || !toFrame)
-        {
-            return nullptr;
-        }
-
+        if (!fromFrame || !toFrame) return nullptr;
         auto outputFrame = FFmpegUtils::createAvFrame(m_width, m_height, m_pixelFormat);
-        if (!outputFrame)
-        {
-            m_errorString = "创建输出帧失败";
-            return nullptr;
-        }
+        if (!outputFrame) { m_errorString = "创建输出帧失败"; return nullptr; }
 
-        outputFrame->format = m_pixelFormat;
-        outputFrame->width = m_width;
-        outputFrame->height = m_height;
-
-        for (int plane = 0; plane < 3; ++plane)
-        {
+        for (int plane = 0; plane < 3; ++plane) {
             int width = (plane == 0) ? m_width : m_width / 2;
             int height = (plane == 0) ? m_height : m_height / 2;
-
-            for (int y = 0; y < height; ++y)
-            {
-                for (int x = 0; x < width; ++x)
-                {
+            for (int y = 0; y < height; ++y) {
+                for (int x = 0; x < width; ++x) {
                     uint8_t fromPixel = fromFrame->data[plane][y * fromFrame->linesize[plane] + x];
                     uint8_t toPixel = toFrame->data[plane][y * toFrame->linesize[plane] + x];
-                    uint8_t blendedPixel = static_cast<uint8_t>(fromPixel * (1.0 - progress) + toPixel * progress);
-                    outputFrame->data[plane][y * outputFrame->linesize[plane] + x] = blendedPixel;
+                    outputFrame->data[plane][y * outputFrame->linesize[plane] + x] = static_cast<uint8_t>(fromPixel * (1.0 - progress) + toPixel * progress);
                 }
             }
         }
-
         return outputFrame;
     }
 
     FFmpegUtils::AvFramePtr EffectProcessor::applyWipe(const AVFrame *fromFrame, const AVFrame *toFrame, double progress)
     {
-         if (!fromFrame || !toFrame) return nullptr;
+        if (!fromFrame || !toFrame) return nullptr;
         auto outputFrame = FFmpegUtils::createAvFrame(m_width, m_height, m_pixelFormat);
         if (!outputFrame) return nullptr;
 
         int wipePosition = static_cast<int>(m_width * progress);
-
-        for (int plane = 0; plane < 3; ++plane)
-        {
+        for (int plane = 0; plane < 3; ++plane) {
             int width = (plane == 0) ? m_width : m_width / 2;
             int height = (plane == 0) ? m_height : m_height / 2;
-            for (int y = 0; y < height; ++y)
-            {
-                for (int x = 0; x < width; ++x)
-                {
+            for (int y = 0; y < height; ++y) {
+                for (int x = 0; x < width; ++x) {
                     outputFrame->data[plane][y * outputFrame->linesize[plane] + x] = (x < wipePosition) ? toFrame->data[plane][y * toFrame->linesize[plane] + x] : fromFrame->data[plane][y * fromFrame->linesize[plane] + x];
                 }
             }
@@ -185,44 +184,20 @@ namespace VideoCreator
         if (!outputFrame) return nullptr;
 
         int slideOffset = static_cast<int>(m_width * progress);
-        for (int plane = 0; plane < 3; ++plane)
-        {
+        for (int plane = 0; plane < 3; ++plane) {
             int width = (plane == 0) ? m_width : m_width / 2;
             int height = (plane == 0) ? m_height : m_height / 2;
-            for (int y = 0; y < height; ++y)
-            {
-                for (int x = 0; x < width; ++x)
-                {
-                    if (x < (m_width - slideOffset)) { // Area for the fromFrame
+            for (int y = 0; y < height; ++y) {
+                for (int x = 0; x < width; ++x) {
+                    if (x < (m_width - slideOffset)) {
                         outputFrame->data[plane][y * outputFrame->linesize[plane] + x] = fromFrame->data[plane][y * fromFrame->linesize[plane] + x + slideOffset];
-                    } else { // Area for the toFrame
+                    } else {
                         outputFrame->data[plane][y * outputFrame->linesize[plane] + x] = toFrame->data[plane][y * toFrame->linesize[plane] + x - (m_width - slideOffset)];
                     }
                 }
             }
         }
         return outputFrame;
-    }
-
-    std::vector<uint8_t> EffectProcessor::applyVolumeMix(const std::vector<uint8_t> &audioData,
-                                                         const VolumeMixEffect &effect,
-                                                         double progress,
-                                                         int sampleRate, int channels)
-    {
-        if (!effect.enabled || audioData.empty()) return audioData;
-        std::vector<uint8_t> result = audioData;
-        float volume = 1.0f;
-        if (progress < effect.fade_in) {
-            volume = static_cast<float>(progress / effect.fade_in);
-        } else if (progress > (1.0 - effect.fade_out)) {
-            volume = static_cast<float>((1.0 - progress) / effect.fade_out);
-        }
-        float *floatData = reinterpret_cast<float *>(result.data());
-        size_t sampleCount = result.size() / sizeof(float);
-        for (size_t i = 0; i < sampleCount; ++i) {
-            floatData[i] *= volume;
-        }
-        return result;
     }
 
     void EffectProcessor::close()
@@ -238,7 +213,7 @@ namespace VideoCreator
         }
         m_buffersrcContext = nullptr;
         m_buffersinkContext = nullptr;
-        m_buffersrcContext2 = nullptr;
+        m_kb_frames.clear();
     }
 
     bool EffectProcessor::initFilterGraph(const std::string &filterDescription)
@@ -248,6 +223,11 @@ namespace VideoCreator
         const AVFilter *buffersink = avfilter_get_by_name("buffersink");
         AVFilterInOut *outputs = avfilter_inout_alloc();
         AVFilterInOut *inputs = avfilter_inout_alloc();
+        char args[512];
+        char instance_name_in[32], instance_name_out[32];
+        int instance_id;
+        std::string fullFilterDesc;
+
         m_filterGraph = avfilter_graph_alloc();
 
         if (!outputs || !inputs || !m_filterGraph) {
@@ -255,16 +235,19 @@ namespace VideoCreator
             goto end;
         }
 
-        char args[512];
         snprintf(args, sizeof(args),
-                "video_size=%dx%d:pix_fmt=%d:time_base=%d/%d:pixel_aspect=%d/%d",
-                m_width, m_height, m_pixelFormat, 1, 25, 1, 1);
+                "video_size=%dx%d:pix_fmt=%d:time_base=1/%d:pixel_aspect=%d/%d",
+                m_width, m_height, m_pixelFormat, m_fps, 1, 1);
 
-        if (avfilter_graph_create_filter(&m_buffersrcContext, buffersrc, "in", args, nullptr, m_filterGraph) < 0) {
+        instance_id = filter_instance_count++;
+        snprintf(instance_name_in, sizeof(instance_name_in), "buffer_src_%d", instance_id);
+        snprintf(instance_name_out, sizeof(instance_name_out), "buffer_sink_%d", instance_id);
+
+        if (avfilter_graph_create_filter(&m_buffersrcContext, buffersrc, instance_name_in, args, nullptr, m_filterGraph) < 0) {
             m_errorString = "无法创建buffer source滤镜";
             goto end;
         }
-        if (avfilter_graph_create_filter(&m_buffersinkContext, buffersink, "out", nullptr, nullptr, m_filterGraph) < 0) {
+        if (avfilter_graph_create_filter(&m_buffersinkContext, buffersink, instance_name_out, nullptr, nullptr, m_filterGraph) < 0) {
             m_errorString = "无法创建buffer sink滤镜";
             goto end;
         }
@@ -279,8 +262,10 @@ namespace VideoCreator
         inputs->pad_idx = 0;
         inputs->next = nullptr;
 
-        if (avfilter_graph_parse_ptr(m_filterGraph, filterDescription.c_str(), &inputs, &outputs, nullptr) < 0) {
-            m_errorString = "解析滤镜描述失败: " + filterDescription;
+        fullFilterDesc = "[in]" + filterDescription + "[out]";
+
+        if (avfilter_graph_parse_ptr(m_filterGraph, fullFilterDesc.c_str(), &inputs, &outputs, nullptr) < 0) {
+            m_errorString = "解析滤镜描述失败: " + fullFilterDesc;
             goto end;
         }
 

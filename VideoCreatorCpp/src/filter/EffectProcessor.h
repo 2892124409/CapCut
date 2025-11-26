@@ -2,6 +2,7 @@
 #define EFFECT_PROCESSOR_H
 
 #include <string>
+#include <vector>
 #include <memory>
 #include "ffmpeg_utils/FFmpegHeaders.h"
 #include "ffmpeg_utils/AvFrameWrapper.h"
@@ -9,69 +10,45 @@
 
 namespace VideoCreator
 {
-
     class EffectProcessor
     {
     public:
         EffectProcessor();
         ~EffectProcessor();
 
-        // 初始化特效处理器
-        bool initialize(int width, int height, AVPixelFormat format);
+        bool initialize(int width, int height, AVPixelFormat format, int fps);
 
-        // 为Ken Burns特效初始化滤镜
-        bool startKenBurnsEffect(const KenBurnsEffect& effect, int total_frames);
+        // Pre-renders the entire Ken Burns effect sequence using a time-variant expression.
+        bool processKenBurnsEffect(const KenBurnsEffect& effect, const AVFrame* inputImage, int total_frames);
 
-        // 应用已初始化的滤镜
-        FFmpegUtils::AvFramePtr applyFilter(const AVFrame* inputFrame);
+        // Gets a pre-rendered frame from the cache.
+        const AVFrame* getKenBurnsFrame(int frame_index) const;
 
-        // 应用淡入淡出转场
-        FFmpegUtils::AvFramePtr applyCrossfade(const AVFrame *fromFrame,
-                                               const AVFrame *toFrame,
-                                               double progress);
+        // Transition effects
+        FFmpegUtils::AvFramePtr applyCrossfade(const AVFrame *fromFrame, const AVFrame *toFrame, double progress);
+        FFmpegUtils::AvFramePtr applyWipe(const AVFrame *fromFrame, const AVFrame *toFrame, double progress);
+        FFmpegUtils::AvFramePtr applySlide(const AVFrame *fromFrame, const AVFrame *toFrame, double progress);
 
-        // 应用擦除转场
-        FFmpegUtils::AvFramePtr applyWipe(const AVFrame *fromFrame,
-                                           const AVFrame *toFrame,
-                                           double progress);
-
-        // 应用滑动转场
-        FFmpegUtils::AvFramePtr applySlide(const AVFrame *fromFrame,
-                                           const AVFrame *toFrame,
-                                           double progress);
-
-        // 应用音量混合特效
-        std::vector<uint8_t> applyVolumeMix(const std::vector<uint8_t> &audioData,
-                                            const VolumeMixEffect &effect,
-                                            double progress,
-                                            int sampleRate, int channels);
-
-        // 关闭处理器
+        std::string getErrorString() const { return m_errorString; }
         void close();
 
-        // 获取错误信息
-        std::string getErrorString() const { return m_errorString; }
-
     private:
-        // FFmpeg滤镜相关
         AVFilterGraph *m_filterGraph;
         AVFilterContext *m_buffersrcContext;
-        AVFilterContext *m_buffersrcContext2;
         AVFilterContext *m_buffersinkContext;
 
         int m_width;
         int m_height;
         AVPixelFormat m_pixelFormat;
+        int m_fps;
+        mutable std::string m_errorString;
 
-        std::string m_errorString;
+        // Frame cache for the pre-rendered Ken Burns effect
+        std::vector<FFmpegUtils::AvFramePtr> m_kb_frames;
+        bool m_kb_enabled;
 
-        // 初始化滤镜图
+        // Private methods
         bool initFilterGraph(const std::string &filterDescription);
-
-        // 初始化双输入滤镜图
-        bool initTwoInputFilterGraph(const std::string &filterDescription);
-
-        // 清理资源
         void cleanup();
     };
 
