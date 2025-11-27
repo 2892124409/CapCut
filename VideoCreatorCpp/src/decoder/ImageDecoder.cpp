@@ -195,13 +195,6 @@ namespace VideoCreator
             return nullptr;
         }
     
-        // 如果尺寸、格式和颜色范围都匹配，则直接返回
-        if (frame->width == targetWidth && frame->height == targetHeight && frame->format == targetFormat &&
-            (frame->color_range == AVCOL_RANGE_MPEG))
-        {
-            return std::move(frame);
-        }
-    
         // 创建缩放上下文
         m_swsContext = sws_getCachedContext(m_swsContext,
                                            frame->width, frame->height, (AVPixelFormat)frame->format,

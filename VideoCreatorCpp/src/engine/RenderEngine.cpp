@@ -431,35 +431,89 @@ namespace VideoCreator
     {
         int64_t startAudioSampleCount = m_audioSamplesCount;
         int totalFrames = static_cast<int>(std::round(transitionScene.duration * m_config.project.fps));
+        
         ImageDecoder fromDecoder, toDecoder;
         if (!fromDecoder.open(fromScene.resources.image.path) || !toDecoder.open(toScene.resources.image.path)) {
             m_errorString = "无法打开转场中的图片";
             return false;
         }
-        auto fromFrame = fromDecoder.decode();
-        auto toFrame = toDecoder.decode();
-        if (!fromFrame || !toFrame) {
-            m_errorString = "解码转场帧失败";
+
+        // --- Determine the correct FROM frame ---
+        FFmpegUtils::AvFramePtr finalFromFrame;
+        if (fromScene.effects.ken_burns.enabled) {
+            qDebug() << "起点场景包含Ken Burns特效，计算其最后一帧。";
+            
+            // 1. Get scene duration, synchronized with audio if present
+            double fromSceneDuration = fromScene.duration;
+            AudioDecoder tempAudioDecoder;
+            if (!fromScene.resources.audio.path.empty() && tempAudioDecoder.open(fromScene.resources.audio.path)) {
+                double audioDuration = tempAudioDecoder.getDuration();
+                if (audioDuration > 0) fromSceneDuration = audioDuration;
+                tempAudioDecoder.close();
+            }
+            int totalFramesInFromScene = static_cast<int>(std::round(fromSceneDuration * m_config.project.fps));
+
+            // 2. Get the original, unscaled source image for the effect processor
+            auto originalFromFrame = fromDecoder.decodeAndCache();
+            if (!originalFromFrame) {
+                m_errorString = "解码 'from' 场景的原始图片失败";
+                return false;
+            }
+
+            // 3. Process the Ken Burns effect to get the last frame
+            EffectProcessor fromSceneProcessor;
+            fromSceneProcessor.initialize(m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P, m_config.project.fps);
+            if (fromSceneProcessor.processKenBurnsEffect(fromScene.effects.ken_burns, originalFromFrame.get(), totalFramesInFromScene)) {
+                const AVFrame* lastKbFrame = fromSceneProcessor.getKenBurnsFrame(totalFramesInFromScene - 1);
+                if (lastKbFrame) {
+                    finalFromFrame = FFmpegUtils::copyAvFrame(lastKbFrame);
+                } else {
+                    m_errorString = "'from' 场景 Ken Burns 特效处理后未能获取最后一帧: " + fromSceneProcessor.getErrorString();
+                    return false;
+                }
+            } else {
+                m_errorString = "处理 'from' 场景的 Ken Burns 特效失败: " + fromSceneProcessor.getErrorString();
+                return false;
+            }
+
+        } else {
+            qDebug() << "起点场景无特效，使用缩放后的静态图片。";
+            auto fromFrame = fromDecoder.decode();
+            if (!fromFrame) { m_errorString = "解码 'from' 帧失败"; return false; }
+            finalFromFrame = fromDecoder.scaleToSize(fromFrame, m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P);
+        }
+        
+        if (!finalFromFrame) {
+            m_errorString = "未能确定转场的起始帧";
             return false;
         }
-        auto scaledFromFrame = fromDecoder.scaleToSize(fromFrame, m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P);
+
+        // --- Determine the correct TO frame (for now, just the scaled image) ---
+        auto toFrame = toDecoder.decode();
+        if (!toFrame) {
+            m_errorString = "解码 'to' 帧失败";
+            return false;
+        }
         auto scaledToFrame = toDecoder.scaleToSize(toFrame, m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P);
-        if (scaledFromFrame) fromFrame = std::move(scaledFromFrame);
-        if (scaledToFrame) toFrame = std::move(scaledToFrame);
-        EffectProcessor effectProcessor;
-        effectProcessor.initialize(m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P, m_config.project.fps);
+        if (!scaledToFrame) {
+            m_errorString = "缩放 'to' 帧失败";
+            return false;
+        }
+        
+        // --- Apply transition ---
+        EffectProcessor transitionProcessor;
+        transitionProcessor.initialize(m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P, m_config.project.fps);
 
         for (int frameIndex = 0; frameIndex < totalFrames; ++frameIndex)
         {
-            double progress = static_cast<double>(frameIndex) / totalFrames;
             FFmpegUtils::AvFramePtr blendedFrame;
             switch (transitionScene.transition_type) {
-                case TransitionType::CROSSFADE: blendedFrame = effectProcessor.applyCrossfade(fromFrame.get(), toFrame.get(), frameIndex, totalFrames); break;
-                case TransitionType::WIPE: blendedFrame = effectProcessor.applyWipe(fromFrame.get(), toFrame.get(), frameIndex, totalFrames); break;
-                case TransitionType::SLIDE: blendedFrame = effectProcessor.applySlide(fromFrame.get(), toFrame.get(), frameIndex, totalFrames); break;
+                case TransitionType::CROSSFADE: blendedFrame = transitionProcessor.applyCrossfade(finalFromFrame.get(), scaledToFrame.get(), frameIndex, totalFrames); break;
+                case TransitionType::WIPE: blendedFrame = transitionProcessor.applyWipe(finalFromFrame.get(), scaledToFrame.get(), frameIndex, totalFrames); break;
+                case TransitionType::SLIDE: blendedFrame = transitionProcessor.applySlide(finalFromFrame.get(), scaledToFrame.get(), frameIndex, totalFrames); break;
             }
             if (!blendedFrame) {
-                m_errorString = "应用转场特效失败: " + effectProcessor.getErrorString();
+                m_errorString = "应用转场特效失败: " + transitionProcessor.getErrorString();
                 return false;
             }
             blendedFrame->pts = m_frameCount;
@@ -489,7 +543,7 @@ namespace VideoCreator
                 double audio_time_in_scene = (double)(m_audioSamplesCount - startAudioSampleCount) / m_audioCodecContext->sample_rate;
                 while(audio_time_in_scene < video_time_in_scene) {
                     const int frame_size = m_audioCodecContext->frame_size;
-                    if (frame_size <= 0) break; // Avoid infinite loop if frame size is invalid
+                    if (frame_size <= 0) break;
                     
                     auto audioFrame = FFmpegUtils::createAvFrame();
                     audioFrame->nb_samples = frame_size;
