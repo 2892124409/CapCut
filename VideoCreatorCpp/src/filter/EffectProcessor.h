@@ -25,9 +25,9 @@ namespace VideoCreator
         const AVFrame* getKenBurnsFrame(int frame_index) const;
 
         // Transition effects
-        FFmpegUtils::AvFramePtr applyCrossfade(const AVFrame *fromFrame, const AVFrame *toFrame, double progress);
-        FFmpegUtils::AvFramePtr applyWipe(const AVFrame *fromFrame, const AVFrame *toFrame, double progress);
-        FFmpegUtils::AvFramePtr applySlide(const AVFrame *fromFrame, const AVFrame *toFrame, double progress);
+        FFmpegUtils::AvFramePtr applyCrossfade(const AVFrame* fromFrame, const AVFrame* toFrame, int frame_index, int duration_frames);
+        FFmpegUtils::AvFramePtr applyWipe(const AVFrame* fromFrame, const AVFrame* toFrame, int frame_index, int duration_frames);
+        FFmpegUtils::AvFramePtr applySlide(const AVFrame* fromFrame, const AVFrame* toFrame, int frame_index, int duration_frames);
 
         std::string getErrorString() const { return m_errorString; }
         void close();
@@ -35,6 +35,7 @@ namespace VideoCreator
     private:
         AVFilterGraph *m_filterGraph;
         AVFilterContext *m_buffersrcContext;
+        AVFilterContext* m_buffersrcContext2;
         AVFilterContext *m_buffersinkContext;
 
         int m_width;
@@ -47,8 +48,14 @@ namespace VideoCreator
         std::vector<FFmpegUtils::AvFramePtr> m_kb_frames;
         bool m_kb_enabled;
 
+        // Frame cache for transitions
+        std::vector<FFmpegUtils::AvFramePtr> m_transition_frames;
+        bool m_transition_initialized = false;
+
         // Private methods
         bool initFilterGraph(const std::string &filterDescription);
+        bool initTransitionFilterGraph(const std::string& filter_description);
+        bool processTransition(const AVFrame* fromFrame, const AVFrame* toFrame, const std::string& transitionName, int duration_frames);
         void cleanup();
     };
 

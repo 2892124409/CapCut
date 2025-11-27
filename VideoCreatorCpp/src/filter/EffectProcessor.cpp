@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <locale>
 #include <iomanip> // For std::setprecision
+#include <libavutil/opt.h>
 #include <atomic>
 
 namespace VideoCreator
@@ -13,7 +14,7 @@ namespace VideoCreator
     static std::atomic<int> filter_instance_count(0);
 
     EffectProcessor::EffectProcessor()
-        : m_filterGraph(nullptr), m_buffersrcContext(nullptr), m_buffersinkContext(nullptr),
+        : m_filterGraph(nullptr), m_buffersrcContext(nullptr), m_buffersrcContext2(nullptr), m_buffersinkContext(nullptr),
           m_width(0), m_height(0), m_pixelFormat(AV_PIX_FMT_NONE), m_fps(0), m_kb_enabled(false)
     {
     }
@@ -43,7 +44,7 @@ namespace VideoCreator
             return false;
         }
         if (total_frames <= 0) {
-            return true; 
+            return true;
         }
 
         KenBurnsEffect params = effect;
@@ -55,7 +56,7 @@ namespace VideoCreator
         {
             double start_z = (params.preset == "zoom_in") ? 1.0 : 1.2;
             double end_z = (params.preset == "zoom_in") ? 1.2 : 1.0;
-            
+
             std::stringstream zoom_ss;
             zoom_ss << std::fixed << std::setprecision(10) << start_z << "+(" << (end_z - start_z) << ")*on/" << total_frames;
             std::string zoom_expr = zoom_ss.str();
@@ -77,14 +78,14 @@ namespace VideoCreator
                 end_x = 0;
             }
             start_y = (m_height * (pan_scale - 1.0)) / 2;
-            
+
             ss << "zoompan="
                << "z='" << pan_scale << "':" // Zoom is constant for panning
                << "x='" << start_x << "+(" << end_x - start_x << ")*on/" << total_frames << "':"
                << "y='" << start_y << "':" // Y is constant for horizontal panning
                << "d=" << total_frames << ":s=" << m_width << "x" << m_height << ":fps=" << m_fps;
         }
-        else 
+        else
         {
             // Fallback for custom ken_burns or empty preset from config
             ss << "zoompan="
@@ -122,7 +123,7 @@ namespace VideoCreator
             auto filteredFrame = FFmpegUtils::createAvFrame();
             int ret = av_buffersink_get_frame(m_buffersinkContext, filteredFrame.get());
             if (ret < 0) {
-                if (ret == AVERROR_EOF) break; 
+                if (ret == AVERROR_EOF) break;
                 char errbuf[AV_ERROR_MAX_STRING_SIZE];
                 av_strerror(ret, errbuf, sizeof(errbuf));
                 m_errorString = "Error while receiving a frame from the filtergraph: " + std::string(errbuf);
@@ -152,66 +153,124 @@ namespace VideoCreator
         return m_kb_frames[frame_index].get();
     }
 
-    FFmpegUtils::AvFramePtr EffectProcessor::applyCrossfade(const AVFrame *fromFrame, const AVFrame *toFrame, double progress)
+    FFmpegUtils::AvFramePtr EffectProcessor::applyCrossfade(const AVFrame* fromFrame, const AVFrame* toFrame, int frame_index, int duration_frames)
     {
-        if (!fromFrame || !toFrame) return nullptr;
-        auto outputFrame = FFmpegUtils::createAvFrame(m_width, m_height, m_pixelFormat);
-        if (!outputFrame) { m_errorString = "创建输出帧失败"; return nullptr; }
-
-        for (int plane = 0; plane < 3; ++plane) {
-            int width = (plane == 0) ? m_width : m_width / 2;
-            int height = (plane == 0) ? m_height : m_height / 2;
-            for (int y = 0; y < height; ++y) {
-                for (int x = 0; x < width; ++x) {
-                    uint8_t fromPixel = fromFrame->data[plane][y * fromFrame->linesize[plane] + x];
-                    uint8_t toPixel = toFrame->data[plane][y * toFrame->linesize[plane] + x];
-                    outputFrame->data[plane][y * outputFrame->linesize[plane] + x] = static_cast<uint8_t>(fromPixel * (1.0 - progress) + toPixel * progress);
-                }
+        if (!m_transition_initialized) {
+            if (!processTransition(fromFrame, toFrame, "fade", duration_frames)) {
+                return nullptr;
             }
+            m_transition_initialized = true;
         }
-        return outputFrame;
+        if (frame_index < 0 || frame_index >= m_transition_frames.size()) {
+            m_errorString = "Frame index out of bounds for cached transition frames.";
+            return nullptr;
+        }
+        return FFmpegUtils::copyAvFrame(m_transition_frames[frame_index].get());
     }
 
-    FFmpegUtils::AvFramePtr EffectProcessor::applyWipe(const AVFrame *fromFrame, const AVFrame *toFrame, double progress)
+    FFmpegUtils::AvFramePtr EffectProcessor::applyWipe(const AVFrame* fromFrame, const AVFrame* toFrame, int frame_index, int duration_frames)
     {
-        if (!fromFrame || !toFrame) return nullptr;
-        auto outputFrame = FFmpegUtils::createAvFrame(m_width, m_height, m_pixelFormat);
-        if (!outputFrame) return nullptr;
-
-        int wipePosition = static_cast<int>(m_width * progress);
-        for (int plane = 0; plane < 3; ++plane) {
-            int width = (plane == 0) ? m_width : m_width / 2;
-            int height = (plane == 0) ? m_height : m_height / 2;
-            for (int y = 0; y < height; ++y) {
-                for (int x = 0; x < width; ++x) {
-                    outputFrame->data[plane][y * outputFrame->linesize[plane] + x] = (x < wipePosition) ? toFrame->data[plane][y * toFrame->linesize[plane] + x] : fromFrame->data[plane][y * fromFrame->linesize[plane] + x];
-                }
+        if (!m_transition_initialized) {
+            // xfade supports different wipe patterns like wiperight, wipeleft, wipeup, wipedown
+            if (!processTransition(fromFrame, toFrame, "wipeleft", duration_frames)) {
+                return nullptr;
             }
+            m_transition_initialized = true;
         }
-        return outputFrame;
+        if (frame_index < 0 || frame_index >= m_transition_frames.size()) {
+            m_errorString = "Frame index out of bounds for cached transition frames.";
+            return nullptr;
+        }
+        return FFmpegUtils::copyAvFrame(m_transition_frames[frame_index].get());
     }
 
-    FFmpegUtils::AvFramePtr EffectProcessor::applySlide(const AVFrame *fromFrame, const AVFrame *toFrame, double progress)
+    FFmpegUtils::AvFramePtr EffectProcessor::applySlide(const AVFrame* fromFrame, const AVFrame* toFrame, int frame_index, int duration_frames)
     {
-        if (!fromFrame || !toFrame) return nullptr;
-        auto outputFrame = FFmpegUtils::createAvFrame(m_width, m_height, m_pixelFormat);
-        if (!outputFrame) return nullptr;
-
-        int slideOffset = static_cast<int>(m_width * progress);
-        for (int plane = 0; plane < 3; ++plane) {
-            int width = (plane == 0) ? m_width : m_width / 2;
-            int height = (plane == 0) ? m_height : m_height / 2;
-            for (int y = 0; y < height; ++y) {
-                for (int x = 0; x < width; ++x) {
-                    if (x < (m_width - slideOffset)) {
-                        outputFrame->data[plane][y * outputFrame->linesize[plane] + x] = fromFrame->data[plane][y * fromFrame->linesize[plane] + x + slideOffset];
-                    } else {
-                        outputFrame->data[plane][y * outputFrame->linesize[plane] + x] = toFrame->data[plane][y * toFrame->linesize[plane] + x - (m_width - slideOffset)];
-                    }
-                }
+        if (!m_transition_initialized) {
+            // xfade supports various slide patterns
+            if (!processTransition(fromFrame, toFrame, "slideleft", duration_frames)) {
+                return nullptr;
             }
+            m_transition_initialized = true;
         }
-        return outputFrame;
+        if (frame_index < 0 || frame_index >= m_transition_frames.size()) {
+            m_errorString = "Frame index out of bounds for cached transition frames.";
+            return nullptr;
+        }
+        return FFmpegUtils::copyAvFrame(m_transition_frames[frame_index].get());
+    }
+
+    bool EffectProcessor::processTransition(const AVFrame* fromFrame, const AVFrame* toFrame, const std::string& transitionName, int duration_frames)
+    {
+        m_transition_frames.clear();
+        if (!fromFrame || !toFrame) {
+            m_errorString = "Input frames for transition are null.";
+            return false;
+        }
+
+        double transition_duration_sec = (double)duration_frames / m_fps;
+
+        std::stringstream ss;
+        ss.imbue(std::locale("C"));
+        ss << std::fixed << std::setprecision(5);
+        
+        // Create a filtergraph that pads each single-frame input into a full-duration stream, then xfades them.
+        ss << "[in0]tpad=stop_mode=clone:stop_duration=" << transition_duration_sec << "[s0];"
+           << "[in1]tpad=stop_mode=clone:stop_duration=" << transition_duration_sec << "[s1];"
+           << "[s0][s1]xfade=transition=" << transitionName
+           << ":duration=" << transition_duration_sec << ":offset=0[out]";
+
+        if (!initTransitionFilterGraph(ss.str())) {
+            return false;
+        }
+
+        AVFrame* from_clone = av_frame_clone(fromFrame);
+        AVFrame* to_clone = av_frame_clone(toFrame);
+        if (!from_clone || !to_clone) {
+            m_errorString = "Failed to clone frames for transition.";
+            av_frame_free(&from_clone);
+            av_frame_free(&to_clone);
+            return false;
+        }
+        
+        from_clone->pts = 0;
+        if (av_buffersrc_add_frame_flags(m_buffersrcContext, from_clone, AV_BUFFERSRC_FLAG_KEEP_REF) < 0) {
+            m_errorString = "Error feeding 'from' frame to transition filtergraph.";
+            av_frame_free(&to_clone); // Free the other clone
+            return false;
+        }
+
+        to_clone->pts = 0;
+        if (av_buffersrc_add_frame_flags(m_buffersrcContext2, to_clone, AV_BUFFERSRC_FLAG_KEEP_REF) < 0) {
+            m_errorString = "Error feeding 'to' frame to transition filtergraph.";
+            return false;
+        }
+
+        // Signal EOF to both inputs. tpad will loop them.
+        if (av_buffersrc_add_frame(m_buffersrcContext, nullptr) < 0 || av_buffersrc_add_frame(m_buffersrcContext2, nullptr) < 0) {
+            m_errorString = "Failed to signal EOF to transition filter sources.";
+            return false;
+        }
+
+        for (int i = 0; i < duration_frames; ++i) {
+            auto filteredFrame = FFmpegUtils::createAvFrame();
+            int ret = av_buffersink_get_frame(m_buffersinkContext, filteredFrame.get());
+            if (ret < 0) {
+                if (ret == AVERROR_EOF) break;
+                char errbuf[AV_ERROR_MAX_STRING_SIZE];
+                av_strerror(ret, errbuf, sizeof(errbuf));
+                m_errorString = "Error receiving frame from transition filtergraph: " + std::string(errbuf);
+                return false;
+            }
+            m_transition_frames.push_back(std::move(filteredFrame));
+        }
+        
+        if (m_transition_frames.size() != duration_frames) {
+             m_errorString = "Generated transition frame count (" + std::to_string(m_transition_frames.size()) + ") does not match duration_frames (" + std::to_string(duration_frames) + ").";
+             return false;
+        }
+
+        return true;
     }
 
     void EffectProcessor::close()
@@ -226,21 +285,23 @@ namespace VideoCreator
             m_filterGraph = nullptr;
         }
         m_buffersrcContext = nullptr;
+        m_buffersrcContext2 = nullptr;
         m_buffersinkContext = nullptr;
         m_kb_frames.clear();
+        m_transition_frames.clear();
+        m_transition_initialized = false;
     }
 
     bool EffectProcessor::initFilterGraph(const std::string &filterDescription)
     {
-        cleanup(); 
+        cleanup();
         const AVFilter *buffersrc = avfilter_get_by_name("buffer");
         const AVFilter *buffersink = avfilter_get_by_name("buffersink");
         AVFilterInOut *outputs = avfilter_inout_alloc();
         AVFilterInOut *inputs = avfilter_inout_alloc();
         char args[512];
-        char instance_name_in[32], instance_name_out[32];
-        int instance_id;
         std::string fullFilterDesc;
+        int colorspace;
 
         m_filterGraph = avfilter_graph_alloc();
 
@@ -250,18 +311,19 @@ namespace VideoCreator
         }
 
         snprintf(args, sizeof(args),
-                "video_size=%dx%d:pix_fmt=%d:time_base=1/%d:pixel_aspect=%d/%d",
-                m_width, m_height, m_pixelFormat, m_fps, 1, 1);
+                "video_size=%dx%d:pix_fmt=%d:time_base=1/%d:pixel_aspect=%d/%d:frame_rate=%d/1",
+                m_width, m_height, m_pixelFormat, m_fps, 1, 1, m_fps);
 
-        instance_id = filter_instance_count++;
-        snprintf(instance_name_in, sizeof(instance_name_in), "buffer_src_%d", instance_id);
-        snprintf(instance_name_out, sizeof(instance_name_out), "buffer_sink_%d", instance_id);
-
-        if (avfilter_graph_create_filter(&m_buffersrcContext, buffersrc, instance_name_in, args, nullptr, m_filterGraph) < 0) {
+        if (avfilter_graph_create_filter(&m_buffersrcContext, buffersrc, "in", args, nullptr, m_filterGraph) < 0) {
             m_errorString = "无法创建buffer source滤镜";
             goto end;
         }
-        if (avfilter_graph_create_filter(&m_buffersinkContext, buffersink, instance_name_out, nullptr, nullptr, m_filterGraph) < 0) {
+        
+        // Set color properties directly on the filter context to support older FFmpeg versions
+        colorspace = (m_height >= 720) ? AVCOL_SPC_BT709 : AVCOL_SPC_SMPTE170M;
+        av_opt_set_int(m_buffersrcContext, "color_range", AVCOL_RANGE_MPEG, 0);
+        av_opt_set_int(m_buffersrcContext, "colorspace", colorspace, 0);
+        if (avfilter_graph_create_filter(&m_buffersinkContext, buffersink, "out", nullptr, nullptr, m_filterGraph) < 0) {
             m_errorString = "无法创建buffer sink滤镜";
             goto end;
         }
@@ -285,6 +347,83 @@ namespace VideoCreator
 
         if (avfilter_graph_config(m_filterGraph, nullptr) < 0) {
             m_errorString = "配置滤镜图失败";
+            goto end;
+        }
+
+    end:
+        avfilter_inout_free(&inputs);
+        avfilter_inout_free(&outputs);
+        if (!m_errorString.empty()) {
+            cleanup();
+            return false;
+        }
+        return true;
+    }
+
+    bool EffectProcessor::initTransitionFilterGraph(const std::string& filter_description)
+    {
+        cleanup();
+        const AVFilter* buffersrc = avfilter_get_by_name("buffer");
+        const AVFilter* buffersink = avfilter_get_by_name("buffersink");
+        AVFilterInOut* outputs = avfilter_inout_alloc();
+        AVFilterInOut* inputs = avfilter_inout_alloc();
+        char args[512];
+        int colorspace;
+
+        m_filterGraph = avfilter_graph_alloc();
+        if (!outputs || !inputs || !m_filterGraph) {
+            m_errorString = "Cannot allocate filter graph resources.";
+            goto end;
+        }
+        snprintf(args, sizeof(args), "video_size=%dx%d:pix_fmt=%d:time_base=1/%d:pixel_aspect=%d/%d:frame_rate=%d/1", m_width, m_height, m_pixelFormat, m_fps, 1, 1, m_fps);
+
+        if (avfilter_graph_create_filter(&m_buffersrcContext, buffersrc, "in0", args, nullptr, m_filterGraph) < 0) {
+            m_errorString = "Cannot create buffer source 0.";
+            goto end;
+        }
+        if (avfilter_graph_create_filter(&m_buffersrcContext2, buffersrc, "in1", args, nullptr, m_filterGraph) < 0) {
+            m_errorString = "Cannot create buffer source 1.";
+            goto end;
+        }
+
+        // Set color properties directly on the filter contexts to support older FFmpeg versions
+        colorspace = (m_height >= 720) ? AVCOL_SPC_BT709 : AVCOL_SPC_SMPTE170M;
+        av_opt_set_int(m_buffersrcContext, "color_range", AVCOL_RANGE_MPEG, 0);
+        av_opt_set_int(m_buffersrcContext, "colorspace", colorspace, 0);
+        av_opt_set_int(m_buffersrcContext2, "color_range", AVCOL_RANGE_MPEG, 0);
+        av_opt_set_int(m_buffersrcContext2, "colorspace", colorspace, 0);
+        if (avfilter_graph_create_filter(&m_buffersinkContext, buffersink, "out", nullptr, nullptr, m_filterGraph) < 0) {
+            m_errorString = "Cannot create buffer sink.";
+            goto end;
+        }
+
+        outputs->name = av_strdup("in0");
+        outputs->filter_ctx = m_buffersrcContext;
+        outputs->pad_idx = 0;
+        outputs->next = avfilter_inout_alloc();
+        if (!outputs->next) {
+            av_free(outputs->name);
+            m_errorString = "Cannot allocate inout for second input.";
+            goto end;
+        }
+
+        outputs->next->name = av_strdup("in1");
+        outputs->next->filter_ctx = m_buffersrcContext2;
+        outputs->next->pad_idx = 0;
+        outputs->next->next = nullptr;
+        
+        inputs->name = av_strdup("out");
+        inputs->filter_ctx = m_buffersinkContext;
+        inputs->pad_idx = 0;
+        inputs->next = nullptr;
+
+        if (avfilter_graph_parse_ptr(m_filterGraph, filter_description.c_str(), &inputs, &outputs, nullptr) < 0) {
+            m_errorString = "Failed to parse filter description: " + filter_description;
+            goto end;
+        }
+
+        if (avfilter_graph_config(m_filterGraph, nullptr) < 0) {
+            m_errorString = "Failed to configure filter graph.";
             goto end;
         }
 

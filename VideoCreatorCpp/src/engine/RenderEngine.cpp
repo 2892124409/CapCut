@@ -454,12 +454,12 @@ namespace VideoCreator
             double progress = static_cast<double>(frameIndex) / totalFrames;
             FFmpegUtils::AvFramePtr blendedFrame;
             switch (transitionScene.transition_type) {
-                case TransitionType::CROSSFADE: blendedFrame = effectProcessor.applyCrossfade(fromFrame.get(), toFrame.get(), progress); break;
-                case TransitionType::WIPE: blendedFrame = effectProcessor.applyWipe(fromFrame.get(), toFrame.get(), progress); break;
-                case TransitionType::SLIDE: blendedFrame = effectProcessor.applySlide(fromFrame.get(), toFrame.get(), progress); break;
+                case TransitionType::CROSSFADE: blendedFrame = effectProcessor.applyCrossfade(fromFrame.get(), toFrame.get(), frameIndex, totalFrames); break;
+                case TransitionType::WIPE: blendedFrame = effectProcessor.applyWipe(fromFrame.get(), toFrame.get(), frameIndex, totalFrames); break;
+                case TransitionType::SLIDE: blendedFrame = effectProcessor.applySlide(fromFrame.get(), toFrame.get(), frameIndex, totalFrames); break;
             }
             if (!blendedFrame) {
-                m_errorString = "应用转场特效失败";
+                m_errorString = "应用转场特效失败: " + effectProcessor.getErrorString();
                 return false;
             }
             blendedFrame->pts = m_frameCount;

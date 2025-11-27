@@ -195,8 +195,9 @@ namespace VideoCreator
             return nullptr;
         }
     
-        // 如果尺寸和格式已经匹配，直接返回原帧
-        if (frame->width == targetWidth && frame->height == targetHeight && frame->format == targetFormat)
+        // 如果尺寸、格式和颜色范围都匹配，则直接返回
+        if (frame->width == targetWidth && frame->height == targetHeight && frame->format == targetFormat &&
+            (frame->color_range == AVCOL_RANGE_MPEG))
         {
             return std::move(frame);
         }
@@ -211,6 +212,23 @@ namespace VideoCreator
             m_errorString = "无法创建缩放上下文";
             return nullptr;
         }
+    
+        // --- 开始颜色空间修复 ---
+        // 确定源色彩范围 (0 for limited/MPEG, 1 for full/JPEG)
+        int srcRange = (frame->color_range == AVCOL_RANGE_MPEG) ? 0 : 1;
+        // 目标色彩范围总是 limited range for video pipeline
+        int dstRange = 0;
+    
+        // 获取色彩矩阵系数, 基于色彩空间 (e.g., BT.709, BT.601)
+        int colorspace = frame->colorspace;
+        if (colorspace == AVCOL_SPC_UNSPECIFIED) {
+            colorspace = (frame->height >= 720) ? AVCOL_SPC_BT709 : AVCOL_SPC_SMPTE170M;
+        }
+        const int *coeffs = sws_getCoefficients(colorspace);
+    
+        // 设置色彩空间和范围转换细节
+        sws_setColorspaceDetails(m_swsContext, coeffs, srcRange, coeffs, dstRange, 0, 0, 0);
+        // --- 结束颜色空间修复 ---
     
         // 创建目标帧
         auto scaledFrame = FFmpegUtils::createAvFrame(targetWidth, targetHeight, targetFormat);
@@ -231,9 +249,12 @@ namespace VideoCreator
             return nullptr;
         }
     
-        return scaledFrame;
-    }
+        // 在输出帧上设置正确的色彩信息
+        scaledFrame->colorspace = static_cast<AVColorSpace>(colorspace);
+        scaledFrame->color_range = AVCOL_RANGE_MPEG;
     
+        return scaledFrame;
+    }    
     void ImageDecoder::cleanup()
     {
         m_cachedFrame.reset(); // 清除缓存
