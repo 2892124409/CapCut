@@ -123,6 +123,21 @@ void AudioDecoder::run() {
       continue;
     }
 
+    // 【关键修复】检查音频缓冲区是否有足够空间
+    // 如果缓冲区剩余空间小于阈值，等待一段时间
+    {
+      QMutexLocker locker(&m_mutex);
+      if (m_audioSink) {
+        qint64 freeBytes = m_audioSink->bytesFree();
+        // 如果剩余空间小于16KB，等待
+        if (freeBytes < 16384) {
+          locker.unlock();
+          QThread::msleep(10);
+          continue;
+        }
+      }
+    }
+
     // 从 Demuxer 获取数据包
     if (!m_demuxer) {
       QThread::msleep(10);
