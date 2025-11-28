@@ -1,62 +1,80 @@
 #ifndef AUDIODECODER_H
 #define AUDIODECODER_H
 
-#include <QObject>
+#include "ffmpeg_resource_manager.h"
+#include <QAudioFormat>
 #include <QAudioSink>
 #include <QMediaDevices>
 #include <QMutex>
+#include <QThread>
+#include <QWaitCondition>
+#include <atomic>
 #include <vector>
-#include <QAudioFormat> // 【新增】
-#include "ffmpeg_resource_manager.h"
 
-class AudioDecoder : public QObject
-{
-    Q_OBJECT
+
+// 前向声明
+class Demuxer;
+
+class AudioDecoder : public QThread {
+  Q_OBJECT
 
 public:
-    explicit AudioDecoder(QObject *parent = nullptr);
-    ~AudioDecoder();
+  explicit AudioDecoder(QObject *parent = nullptr);
+  ~AudioDecoder() override;
 
-    bool init(AVFormatContext *formatCtx, int audioStreamIndex);
-    void decodePacket(AVPacket *packet);
-    void cleanup();
-    void setVolume(float volume);
-    void pause();
-    void resume();
-    void flushBuffers();
+  bool init(AVFormatContext *formatCtx, int audioStreamIndex);
+  void cleanup();
+  void setVolume(float volume);
+  void requestPause();
+  void requestResume();
+  void requestFlush();
+  void requestStop();
 
-    // 获取音频缓冲区剩余空间
-    qint64 bytesFree() const;
+  // 设置 Demuxer 引用
+  void setDemuxer(Demuxer *demuxer) { m_demuxer = demuxer; }
+
+  // 获取音频缓冲区剩余空间
+  qint64 bytesFree() const;
 
 signals:
-    void audioDecoded();
+  void audioDecoded();
+
+protected:
+  void run() override;
 
 private:
-    // 【新增】辅助函数：重建音频输出
-    bool recreateAudioOutput();
+  // 辅助函数
+  bool recreateAudioOutput();
+  void processPacket(AVPacket *packet);
 
-    FFmpeg::TrackedAVCodecContext m_codecCtx;
-    FFmpeg::TrackedAVFrame m_frame;
-    FFmpeg::TrackedSwrContext m_swrCtx;
-    int m_streamIndex = -1;
+  FFmpeg::TrackedAVCodecContext m_codecCtx;
+  FFmpeg::TrackedAVFrame m_frame;
+  FFmpeg::TrackedSwrContext m_swrCtx;
+  int m_streamIndex = -1;
 
-    QAudioSink *m_audioSink = nullptr;
-    QIODevice *m_audioDevice = nullptr;
-    QAudioFormat m_outputFormat; // 【新增】保存协商好的格式
-    float m_volume = 1.0f;
+  QAudioSink *m_audioSink = nullptr;
+  QIODevice *m_audioDevice = nullptr;
+  QAudioFormat m_outputFormat;
+  float m_volume = 1.0f;
 
-    struct AudioBuffer
-    {
-        uint8_t *data = nullptr;
-        int size = 0;
-        bool inUse = false;
-    };
-    std::vector<AudioBuffer> m_bufferPool;
-    static constexpr int BUFFER_POOL_SIZE = 8;
-    static constexpr int MAX_BUFFER_SIZE = 192000;
+  struct AudioBuffer {
+    uint8_t *data = nullptr;
+    int size = 0;
+    bool inUse = false;
+  };
+  std::vector<AudioBuffer> m_bufferPool;
+  static constexpr int BUFFER_POOL_SIZE = 8;
+  static constexpr int MAX_BUFFER_SIZE = 192000;
 
-    mutable QMutex m_mutex;
-    bool m_isPaused = false;
+  mutable QMutex m_mutex;
+
+  // Demuxer 引用
+  Demuxer *m_demuxer = nullptr;
+
+  // 线程控制
+  std::atomic<bool> m_stopRequested{false};
+  std::atomic<bool> m_pauseRequested{false};
+  std::atomic<bool> m_flushRequested{false};
 };
 
 #endif // AUDIODECODER_H

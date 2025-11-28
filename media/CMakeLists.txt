@@ -33,16 +33,13 @@ qt_add_qml_module(appmedia
     audiodecoder.cpp
     videodecoder.h
     videodecoder.cpp
-    decoderworker.h
-    decoderworker.cpp
+    demuxer.h
+    demuxer.cpp
     ffmpeg_resource_manager.h
     filemanager.h
     filemanager.cpp
     imagedecoder.h
     imagedecoder.cpp
-    # 如果你有 videosynthesizer 类，也记得加在这里
-    # videosynthesizer.h
-    # videosynthesizer.cpp
 )
 
 # ==========================================
