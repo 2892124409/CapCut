@@ -9,7 +9,6 @@
 #include <QWaitCondition>
 #include <atomic>
 
-
 // 前向声明
 class Demuxer;
 
@@ -38,6 +37,7 @@ public:
   // 从帧队列获取帧 (供主线程调用)
   bool popFrame(VideoFrame &frame);
   int frameQueueSize() const;
+  void clearFrameQueue();
 
   // 控制操作
   void requestFlush();

@@ -12,7 +12,6 @@
 #include <QtQml/qqmlregistration.h>
 #include <atomic>
 
-
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -102,13 +101,13 @@ private:
   // 状态变量
   std::atomic<qint64> m_totalDuration{0};
   std::atomic<qint64> m_currentPosition{0};
+  std::atomic<qint64> m_clockOffset{0};
   std::atomic<bool> m_isPaused{false};
 
   // 流索引
   int m_videoStreamIndex = -1;
   int m_audioStreamIndex = -1;
 
-  // 图片查看相关
   qreal m_zoomLevel = 1.0;
   qreal m_rotationAngle = 0.0;
   QString m_currentMediaType = "none"; // "video", "image", "audio", "none"

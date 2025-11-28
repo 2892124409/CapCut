@@ -209,14 +209,17 @@ int VideoDecoder::frameQueueSize() const {
   return m_frameQueue.size();
 }
 
+void VideoDecoder::clearFrameQueue() {
+  QMutexLocker locker(&m_frameMutex);
+  m_frameQueue.clear();
+  m_frameCondition.wakeAll();
+}
+
 void VideoDecoder::cleanup() {
   QMutexLocker locker(&m_mutex);
 
   // 清空帧队列
-  {
-    QMutexLocker frameLocker(&m_frameMutex);
-    m_frameQueue.clear();
-  }
+  clearFrameQueue();
 
   m_rgbBuffer.reset();
   m_codecCtx.reset(nullptr, "AVCodecContext");

@@ -8,7 +8,6 @@
 #include <QSGSimpleTextureNode>
 #include <QTransform>
 
-
 VideoPlayer::VideoPlayer(QQuickItem *parent) : QQuickItem(parent) {
   setFlag(ItemHasContents, true);
 
@@ -63,6 +62,7 @@ void VideoPlayer::stop() {
   m_totalDuration = 0;
   m_currentPosition = 0;
   m_isAudioOnly = false;
+  m_clockOffset = 0;
 }
 
 void VideoPlayer::play(QString filePath) {
@@ -131,6 +131,7 @@ void VideoPlayer::onDemuxerOpened(qint64 duration, int videoStreamIndex,
   // 启动渲染定时器
   m_isPaused = false;
   emit pausedChanged();
+  m_clockOffset = 0;
   m_masterClock.start();
   m_timer->start(16); // 约60fps
 }
@@ -169,6 +170,7 @@ void VideoPlayer::resume() {
     if (m_videoDecoder)
       m_videoDecoder->requestResume();
 
+    m_clockOffset = m_currentPosition.load();
     m_masterClock.restart();
     m_timer->start(16);
     emit pausedChanged();
@@ -184,10 +186,14 @@ void VideoPlayer::seek(qint64 ms) {
 
   if (m_audioDecoder)
     m_audioDecoder->requestFlush();
-  if (m_videoDecoder)
+
+  if (m_videoDecoder) {
     m_videoDecoder->requestFlush();
+    m_videoDecoder->clearFrameQueue();
+  }
 
   m_currentPosition = ms;
+  m_clockOffset = ms;
   emit positionChanged();
   m_masterClock.restart();
 }
@@ -195,7 +201,7 @@ void VideoPlayer::seek(qint64 ms) {
 void VideoPlayer::onTimerFire() {
   if (m_isAudioOnly) {
     // 纯音频模式,根据时钟更新位置
-    qint64 elapsed = m_masterClock.elapsed();
+    qint64 elapsed = m_masterClock.elapsed() + m_clockOffset.load();
     if (elapsed < m_totalDuration.load()) {
       m_currentPosition = elapsed;
       emit positionChanged();
@@ -211,6 +217,8 @@ void VideoPlayer::onTimerFire() {
         QWriteLocker locker(&m_imageLock);
         m_currentImage = frame.image;
         m_currentPosition = frame.pts;
+        m_clockOffset = frame.pts;
+        m_masterClock.restart();
       }
       emit positionChanged();
       update();
