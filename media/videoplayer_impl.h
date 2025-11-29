@@ -7,6 +7,7 @@
 #include "videodecoder.h"
 #include <QReadWriteLock>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <atomic>
 
 /**
@@ -59,6 +60,7 @@ private:
     std::atomic<qint64> m_currentPosition{0};
     std::atomic<bool> m_isPaused{false};
     std::atomic<bool> m_isStopped{true};
+    bool m_reachedEof = false;
 
     // 流索引
     int m_videoStreamIndex = -1;
@@ -66,10 +68,12 @@ private:
 
     // 纯音频播放相关
     std::atomic<qint64> m_audioClockMs{0};
+    QElapsedTimer m_audioClockTimer;
 
     // 提前到达的帧缓存，等音频时钟追上再显示
     VideoFrame m_pendingFrame;
     bool m_hasPendingFrame = false;
+    qint64 m_lastFramePts = 0;
 };
 
 #endif // VIDEOPLAYER_IMPL_H

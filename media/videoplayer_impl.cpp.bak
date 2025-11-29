@@ -19,9 +19,6 @@ bool VideoPlayerImpl::load(const QString &filePath)
     cleanup();
 
     // 创建并启动 Demuxer
-    m_audioClockTimer.invalidate();
-    m_reachedEof = false;
-    m_lastFramePts = 0;
     m_demuxer = new Demuxer(this);
     connect(m_demuxer, &Demuxer::opened, this, &VideoPlayerImpl::onDemuxerOpened);
     connect(m_demuxer, &Demuxer::endOfFile, this, &VideoPlayerImpl::onDemuxerEndOfFile);
@@ -62,8 +59,6 @@ void VideoPlayerImpl::pause()
     if (!m_isPaused.load()) {
         m_timer->stop();
         m_isPaused.store(true);
-        m_audioClockTimer.invalidate();
-        m_reachedEof = false;
 
         if (m_demuxer)
             m_demuxer->requestPause();
@@ -98,9 +93,7 @@ void VideoPlayerImpl::seek(qint64 position)
         m_videoDecoder->clearFrameQueue();
     }
 
-    m_hasPendingFrame = false;
     m_currentPosition = position;
-    m_audioClockTimer.invalidate();
     emit positionChanged(position);
 }
 
@@ -133,26 +126,6 @@ bool VideoPlayerImpl::isPaused() const
 bool VideoPlayerImpl::isStopped() const
 {
     return m_isStopped.load();
-}
-
-static qint64 effectiveAudioClock(const std::atomic<qint64> &clockMs, const QElapsedTimer &timer, qint64 totalDuration)
-{
-    qint64 base = clockMs.load();
-    if (base <= 0)
-        return base;
-
-    if (timer.isValid()) {
-        qint64 elapsed = timer.elapsed();
-        if (elapsed < 300) {
-            base += elapsed;
-        } else {
-            return -1; // 音频时钟停滞，允许视频自由前进
-        }
-    }
-
-    if (totalDuration > 0)
-        base = qMin(base, totalDuration);
-    return base;
 }
 
 QImage VideoPlayerImpl::currentFrame() const
@@ -214,8 +187,14 @@ void VideoPlayerImpl::onDemuxerOpened(qint64 duration, int videoStreamIndex, int
 
 void VideoPlayerImpl::onDemuxerEndOfFile()
 {
-    qDebug() << "VideoPlayerImpl: 到达文件末尾，等待帧队列耗尽";
-    m_reachedEof = true;
+    qDebug() << "VideoPlayerImpl: 播放结束";
+    m_timer->stop();
+    m_isPaused = true;
+    m_isStopped = true;
+    emit pausedStateChanged(true);
+    emit playingStateChanged(false);
+    emit stoppedStateChanged(true);
+    emit mediaEnded();
 }
 
 void VideoPlayerImpl::onTimerFire()
@@ -224,8 +203,8 @@ void VideoPlayerImpl::onTimerFire()
     if (!m_videoDecoder)
         return;
 
-    static constexpr qint64 kMaxLeadMs = 50; // 视频超前音频的容忍度
-    static constexpr qint64 kMaxLagMs = 60; // 视频落后音频的容忍度
+    static constexpr qint64 kMaxLeadMs = 60; // 视频超前音频的容忍度
+    static constexpr qint64 kMaxLagMs = 120; // 视频落后音频的容忍度
 
     VideoFrame frame;
     auto fetchFrame = [&]() -> bool {
@@ -239,10 +218,13 @@ void VideoPlayerImpl::onTimerFire()
 
     bool hasFrame = fetchFrame();
     while (hasFrame) {
-        qint64 audioClock = m_audioDecoder ? effectiveAudioClock(m_audioClockMs, m_audioClockTimer, m_totalDuration.load()) : -1;
-        if (audioClock < 0) {
-            // 没有可用音频时钟，直接显示视频
-            break;
+        qint64 audioClock = m_audioClockMs.load();
+        if (audioClock > 0 && m_audioClockTimer.isValid()) {
+            audioClock += m_audioClockTimer.elapsed();
+            const qint64 total = m_totalDuration.load();
+            if (total > 0) {
+                audioClock = qMin(audioClock, total);
+            }
         }
 
         qint64 delta = frame.pts - audioClock;
@@ -262,31 +244,22 @@ void VideoPlayerImpl::onTimerFire()
         break;
     }
 
-    if (!hasFrame || frame.image.isNull()) {
-        if (m_reachedEof && m_videoDecoder && m_videoDecoder->frameQueueSize() == 0) {
-            m_timer->stop();
-            m_isPaused = true;
-            m_isStopped = true;
-            qint64 finalPos = m_totalDuration.load() > 0 ? m_totalDuration.load() : m_lastFramePts;
-            if (finalPos > m_currentPosition.load()) {
-                m_currentPosition = finalPos;
-                emit positionChanged(finalPos);
-            }
-            emit pausedStateChanged(true);
-            emit playingStateChanged(false);
-            emit stoppedStateChanged(true);
-            emit mediaEnded();
-        }
+    if (!hasFrame || frame.image.isNull())
         return;
-    }
 
     {
         QWriteLocker locker(&m_imageLock);
         m_currentImage = frame.image;
     }
 
-    m_lastFramePts = frame.pts;
-    qint64 audioClock = effectiveAudioClock(m_audioClockMs, m_audioClockTimer, m_totalDuration.load());
+    qint64 audioClock = m_audioClockMs.load();
+    if (audioClock > 0 && m_audioClockTimer.isValid()) {
+        audioClock += m_audioClockTimer.elapsed();
+        const qint64 total = m_totalDuration.load();
+        if (total > 0) {
+            audioClock = qMin(audioClock, total);
+        }
+    }
     qint64 reportPos = audioClock > 0 ? audioClock : frame.pts;
     m_currentPosition = reportPos;
     emit positionChanged(reportPos);
@@ -341,8 +314,6 @@ void VideoPlayerImpl::cleanup()
     m_isPaused = false;
     m_isStopped = true;
     m_hasPendingFrame = false;
-    m_reachedEof = false;
-    m_lastFramePts = 0;
 
     emit positionChanged(0);
     emit durationChanged(0);
@@ -351,3 +322,4 @@ void VideoPlayerImpl::cleanup()
     emit stoppedStateChanged(true);
     emit frameChanged(QImage());
 }
+
