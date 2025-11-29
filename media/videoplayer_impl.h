@@ -65,6 +65,9 @@ private:
     QString m_currentFilePath;
     bool m_startPausedOnOpen = false;
     std::atomic<qint64> m_reloadTarget{ -1 };
+    std::atomic<qint64> m_seekTargetMs{ -1 };
+    QElapsedTimer m_seekTimer;
+    bool m_seekGraceActive = false;
 
     // 流索引
     int m_videoStreamIndex = -1;

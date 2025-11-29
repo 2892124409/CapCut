@@ -76,7 +76,7 @@ bool AudioDecoder::init(AVFormatContext *formatCtx, int audioStreamIndex) {
   m_outputFormat = format;
 
   // 创建音频输出
-  m_audioSink = new QAudioSink(device, m_outputFormat, this);
+  m_audioSink = new QAudioSink(device, m_outputFormat);
   m_audioSink->setBufferSize(targetSampleRate * 2 * 2 * 0.5);
   m_audioSink->setVolume(m_volume);
 
@@ -207,9 +207,11 @@ void AudioDecoder::processPacket(AVPacket *packet) {
       } else if (packet && packet->pts != AV_NOPTS_VALUE) {
         ptsMs = av_rescale_q(packet->pts, m_timeBase, AVRational{1, 1000});
       }
-      m_lastPtsMs = ptsMs;
+      constexpr qint64 kDropTolerance = 30;
+      qint64 dropUntil = m_dropUntilMs.load();
+      bool dropping = dropUntil >= 0 && ptsMs + kDropTolerance < dropUntil;
 
-      if (frame_count > 0 && m_audioDevice) {
+      if (frame_count > 0 && m_audioDevice && !dropping) {
         m_audioDevice->write((const char *)buffer, frame_count * 2 * 2);
       }
 
@@ -220,11 +222,18 @@ void AudioDecoder::processPacket(AVPacket *packet) {
       }
 
       qint64 clockMs = ptsMs;
-      qint64 delayMs = bufferedMilliseconds();
-      if (delayMs > 0)
-        clockMs = qMax<qint64>(0, ptsMs - delayMs);
-      emit audioClockUpdated(clockMs);
-      emit audioDecoded();
+      if (dropping) {
+        if (dropUntil >= 0 && ptsMs + kDropTolerance >= dropUntil) {
+          m_dropUntilMs.store(-1);
+        }
+      } else {
+        qint64 delayMs = bufferedMilliseconds();
+        if (delayMs > 0)
+          clockMs = qMax<qint64>(0, ptsMs - delayMs);
+        emit audioClockUpdated(clockMs);
+        emit audioDecoded();
+      }
+      m_lastPtsMs = ptsMs;
     }
   }
 }
@@ -255,7 +264,7 @@ bool AudioDecoder::recreateAudioOutput() {
   m_audioDevice = nullptr;
 
   QAudioDevice device = QMediaDevices::defaultAudioOutput();
-  m_audioSink = new QAudioSink(device, m_outputFormat, this);
+  m_audioSink = new QAudioSink(device, m_outputFormat);
 
   int bytesPerSec = m_outputFormat.sampleRate() * 2 * 2;
   m_audioSink->setBufferSize(bytesPerSec * 0.5);

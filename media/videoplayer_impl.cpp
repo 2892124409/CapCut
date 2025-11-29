@@ -32,6 +32,10 @@ bool VideoPlayerImpl::load(const QString &filePath)
     m_reachedEof = false;
     m_lastFramePts = 0;
     m_pendingSeek.store(-1);
+    m_seekTargetMs.store(-1);
+    m_audioClockMs.store(-1);
+    m_seekGraceActive = false;
+    m_seekTimer.invalidate();
     m_currentFilePath = filePath;
     m_demuxer = new Demuxer(this);
     connect(m_demuxer, &Demuxer::opened, this, &VideoPlayerImpl::onDemuxerOpened);
@@ -95,35 +99,82 @@ void VideoPlayerImpl::stop()
 
 void VideoPlayerImpl::seek(qint64 position)
 {
+    qDebug() << "VP::seek request pos" << position << "eof?" << m_reachedEof
+             << "demuxer running?" << (m_demuxer && m_demuxer->isRunning())
+             << "wasPlaying?" << isPlaying();
     if (!m_demuxer || !m_demuxer->isRunning() || m_reachedEof) {
         if (m_currentFilePath.isEmpty())
             return;
         m_pendingSeek.store(position);
         m_reloadPending.store(true);
         m_reloadTarget.store(position);
+        m_seekTargetMs.store(position);
+        m_seekGraceActive = true;
         m_startPausedOnOpen = true; // 用户拖动后由他决定何时播放
         load(m_currentFilePath);
         return;
     }
 
-    // 请求所有组件进行 seek
+    const bool wasPlaying = isPlaying();
+
+    // 暂停所有组件，避免旧数据继续播放
+    m_timer->stop();
+    if (m_demuxer)
+        m_demuxer->requestPause();
+    if (m_audioDecoder)
+        m_audioDecoder->requestPause();
+    if (m_videoDecoder)
+        m_videoDecoder->requestPause();
+
+    // 请求 seek 并刷新缓存
     m_demuxer->requestSeek(position);
 
     if (m_audioDecoder)
         m_audioDecoder->requestFlush();
-
     if (m_videoDecoder) {
         m_videoDecoder->requestFlush();
         m_videoDecoder->clearFrameQueue();
     }
 
+    // 重置状态并锁定目标
     m_hasPendingFrame = false;
-    m_currentPosition = position;
-    m_audioClockTimer.invalidate();
+    m_pendingFrame = VideoFrame{};
     m_reachedEof = false;
     m_lastFramePts = 0;
     m_reloadTarget.store(-1);
+    m_seekTargetMs.store(position);
+    m_seekGraceActive = true;
+    m_seekTimer.restart();
+    if (m_audioDecoder)
+        m_audioDecoder->setDropUntil(position);
+
+    // 重置时钟并立刻同步 UI
+    m_audioClockMs.store(position);
+    m_audioClockTimer.restart();
+    m_currentPosition = position;
+    qDebug() << "VP::seek state reset to" << position;
     emit positionChanged(position);
+
+    // 恢复播放状态
+    if (wasPlaying) {
+        if (m_demuxer)
+            m_demuxer->requestResume();
+        if (m_audioDecoder)
+            m_audioDecoder->requestResume();
+        if (m_videoDecoder)
+            m_videoDecoder->requestResume();
+        m_isPaused.store(false);
+        m_isStopped.store(false);
+        m_timer->start(16);
+        emit pausedStateChanged(false);
+        emit playingStateChanged(true);
+        qDebug() << "VP::seek resume playback from" << position;
+    } else {
+        m_isPaused.store(true);
+        emit pausedStateChanged(true);
+        emit playingStateChanged(false);
+        qDebug() << "VP::seek stay paused at" << position;
+    }
 }
 
 void VideoPlayerImpl::setVolume(float volume)
@@ -211,8 +262,15 @@ void VideoPlayerImpl::onDemuxerOpened(qint64 duration, int videoStreamIndex, int
     if (target >= 0) {
         m_demuxer->requestSeek(target);
         m_currentPosition = target;
+        m_seekTargetMs.store(target);
+        m_seekGraceActive = true;
+        m_seekTimer.restart();
+        m_audioClockMs.store(-1);
         m_audioClockTimer.invalidate();
+        if (m_audioDecoder)
+            m_audioDecoder->setDropUntil(target);
         emit positionChanged(target);
+        qDebug() << "VP::onOpen apply pending seek to" << target;
     }
 
     // 初始化并启动视频解码器
@@ -234,10 +292,24 @@ void VideoPlayerImpl::onDemuxerOpened(qint64 duration, int videoStreamIndex, int
         if (m_audioDecoder->init(m_demuxer->formatContext(), audioStreamIndex)) {
             m_audioDecoder->setDemuxer(m_demuxer);
             connect(m_audioDecoder, &AudioDecoder::audioClockUpdated, this, [this](qint64 clockMs) {
+                qint64 target = m_seekTargetMs.load();
+                constexpr qint64 kAudioTolerance = 20;
+                if (target >= 0 && clockMs + kAudioTolerance < target) {
+                    qDebug() << "VP::audioClock skip (before target)"
+                             << "clock" << clockMs << "target" << target;
+                    return; // 忽略落后于目标的音频时钟，防止进度倒退
+                }
                 m_audioClockMs = clockMs;
                 m_audioClockTimer.restart();
-                m_currentPosition = clockMs;
-                emit positionChanged(clockMs);
+                if (target >= 0 && clockMs + kAudioTolerance < target) {
+                    return;
+                }
+                qint64 report = clockMs;
+                if (target >= 0 && report < target)
+                    report = target;
+                qDebug() << "VP::audioClock set" << clockMs << "report" << report << "target" << target;
+                m_currentPosition = report;
+                emit positionChanged(report);
             });
             m_audioDecoder->start();
         } else {
@@ -282,6 +354,8 @@ void VideoPlayerImpl::onTimerFire()
 
     static constexpr qint64 kMaxLeadMs = 50; // 视频超前音频的容忍度
     static constexpr qint64 kMaxLagMs = 60; // 视频落后音频的容忍度
+    static constexpr qint64 kTargetTol = 20; // seek 目标容忍
+    static constexpr qint64 kSeekGraceMs = 300;
 
     VideoFrame frame;
     auto fetchFrame = [&]() -> bool {
@@ -296,8 +370,17 @@ void VideoPlayerImpl::onTimerFire()
     bool hasFrame = fetchFrame();
     while (hasFrame) {
         qint64 audioClock = m_audioDecoder ? effectiveAudioClock(m_audioClockMs, m_audioClockTimer, m_totalDuration.load()) : -1;
-        if (audioClock < 0) {
-            // 没有可用音频时钟，直接显示视频
+        qint64 target = m_seekTargetMs.load();
+        bool inSeekGrace = target >= 0 && m_seekTimer.isValid() && m_seekTimer.elapsed() < kSeekGraceMs;
+        if (target >= 0 && audioClock >= 0) {
+            if (audioClock + kTargetTol < target) {
+                audioClock = -1; // 音频落后于目标，暂不参与对齐
+            } else if (audioClock < target) {
+                audioClock = target; // 抬到目标，避免回跳
+            }
+        }
+        if (audioClock < 0 || inSeekGrace) {
+            // 不使用音频时钟对齐，直接显示视频
             break;
         }
 
@@ -312,6 +395,7 @@ void VideoPlayerImpl::onTimerFire()
             // 视频太早,缓存这帧等待音频追上
             m_pendingFrame = frame;
             m_hasPendingFrame = true;
+            qDebug() << "VP::render early frame pts" << frame.pts << "audio" << audioClock << "target" << target;
             return;
         }
         // 在容忍范围内
@@ -342,8 +426,34 @@ void VideoPlayerImpl::onTimerFire()
     }
 
     m_lastFramePts = frame.pts;
+    // 如果有目标 seek，丢弃早于目标的帧
+    qint64 seekTarget = m_seekTargetMs.load();
+    if (seekTarget >= 0 && frame.pts + 30 < seekTarget) { // 容忍微小偏差
+        return;
+    }
+    if (seekTarget >= 0 && frame.pts >= seekTarget - kTargetTol) {
+        if (m_audioClockMs.load() >= seekTarget - kTargetTol) {
+            m_seekTargetMs.store(-1);
+            m_seekGraceActive = false;
+        } else if (m_seekTimer.isValid() && m_seekTimer.elapsed() > 300) {
+            qDebug() << "VP::seek grace expired, clearing target" << seekTarget;
+            m_seekTargetMs.store(-1);
+            m_seekGraceActive = false;
+        }
+    }
+
     qint64 audioClock = effectiveAudioClock(m_audioClockMs, m_audioClockTimer, m_totalDuration.load());
+    if (seekTarget >= 0) {
+        if (audioClock > 0 && audioClock + kTargetTol < seekTarget) {
+            audioClock = -1; // 不用音频时钟推进
+        } else if (audioClock > 0 && audioClock < seekTarget) {
+            audioClock = seekTarget;
+        }
+    }
     qint64 reportPos = audioClock > 0 ? audioClock : frame.pts;
+    if (seekTarget >= 0 && reportPos < seekTarget) {
+        reportPos = seekTarget;
+    }
     m_currentPosition = reportPos;
     emit positionChanged(reportPos);
     emit frameChanged(frame.image);
@@ -408,6 +518,10 @@ void VideoPlayerImpl::cleanup(bool emitSignals)
     m_reloadPending.store(false);
     m_reloadTarget.store(-1);
     m_pendingSeek.store(-1);
+    m_seekTargetMs.store(-1);
+    m_seekTimer.invalidate();
+    m_audioClockMs.store(-1);
+    m_seekGraceActive = false;
     if (emitSignals) {
         emit pausedStateChanged(false);
         emit playingStateChanged(false);

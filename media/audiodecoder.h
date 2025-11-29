@@ -29,6 +29,7 @@ public:
   void requestResume();
   void requestFlush();
   void requestStop();
+  void setDropUntil(qint64 ms) { m_dropUntilMs.store(ms); }
 
   // 设置 Demuxer 引用
   void setDemuxer(Demuxer *demuxer) { m_demuxer = demuxer; }
@@ -79,6 +80,7 @@ private:
   std::atomic<bool> m_stopRequested{false};
   std::atomic<bool> m_pauseRequested{false};
   std::atomic<bool> m_flushRequested{false};
+  std::atomic<qint64> m_dropUntilMs{-1};
 };
 
 #endif // AUDIODECODER_H
