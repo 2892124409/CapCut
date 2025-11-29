@@ -4,14 +4,11 @@
 #include "imediaplayer.h"
 #include <QObject>
 #include <QString>
-#include <QQuickItem>
-#include <QSGNode>
-#include <QSGSimpleTextureNode>
-#include <QSGTexture>
+#include <QQuickFramebufferObject>
 #include <QReadWriteLock>
-#include <QElapsedTimer>
-#include <QTimer>
 #include <atomic>
+
+class MediaRenderer;
 
 /**
  * @brief 媒体控制器
@@ -19,9 +16,10 @@
  * 统一管理视频、音频、图片播放器，
  * 提供统一的控制接口给QML使用
  */
-class MediaController : public QQuickItem {
+class MediaController : public QQuickFramebufferObject {
     Q_OBJECT
     QML_ELEMENT
+    friend class MediaRenderer;
 
     // === 暴露给 QML 的属性 ===
     Q_PROPERTY(qint64 duration READ duration NOTIFY durationChanged)
@@ -34,8 +32,8 @@ public:
     explicit MediaController(QQuickItem *parent = nullptr);
     ~MediaController() override;
 
-    // OpenGL 渲染入口
-    QSGNode *updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *) override;
+    // QQuickFramebufferObject 渲染入口
+    Renderer *createRenderer() const override;
 
     // === 供 QML 调用的统一接口 ===
     Q_INVOKABLE bool loadMedia(const QString &filePath);
@@ -77,11 +75,8 @@ private:
     // 清理当前播放器
     void cleanupCurrentPlayer();
     
-    // 更新纹理
-    void updateTexture(const QImage &image);
-    
-    // 渲染图像
-    void renderImage(QSGSimpleTextureNode *node, const QRectF &rect);
+    // 渲染线程安全地获取帧副本
+    bool takeFrame(QImage &copy);
 
     // 当前媒体播放器
     IMediaPlayer* m_currentPlayer = nullptr;
@@ -89,11 +84,7 @@ private:
     // 渲染相关
     QImage m_currentFrame;
     QReadWriteLock m_frameLock;
-    QSGTexture *m_cachedTexture = nullptr;
-    QSize m_cachedTextureSize;
-    
-    // 定时器
-    QTimer *m_renderTimer = nullptr;
+    std::atomic<bool> m_frameDirty{false};
     
     // 状态缓存
     std::atomic<qint64> m_cachedDuration{0};

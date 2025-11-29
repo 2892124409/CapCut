@@ -11,6 +11,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(Qt6 REQUIRED COMPONENTS Quick)
 find_package(Qt6 REQUIRED COMPONENTS Core)
 find_package(Qt6 REQUIRED COMPONENTS Multimedia) # <--- 之前报错就是因为缺了这行！
+find_package(Qt6 REQUIRED COMPONENTS OpenGL)
 
 qt_standard_project_setup(REQUIRES 6.5) # 建议稍微降低一点版本要求以兼容旧环境，或者保持 6.8
 
@@ -64,6 +65,7 @@ include_directories(${FFMPEG_DIR}/include)
 target_link_libraries(appmedia PRIVATE
     Qt6::Quick
     Qt6::Multimedia
+    Qt6::OpenGL
 
     # FFmpeg 库
     ${FFMPEG_DIR}/lib/avcodec.lib
