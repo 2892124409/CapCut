@@ -504,16 +504,57 @@ namespace VideoCreator
             return false;
         }
 
-        // --- Determine the correct TO frame (for now, just the scaled image) ---
-        auto toFrame = toDecoder.decode();
-        if (!toFrame) {
-            m_errorString = "解码 'to' 帧失败";
-            return false;
-        }
-        auto scaledToFrame = toDecoder.scaleToSize(toFrame, m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P);
-        if (!scaledToFrame) {
-            m_errorString = "缩放 'to' 帧失败";
-            return false;
+        // --- Determine the correct TO frame (prefer特效首帧) ---
+        FFmpegUtils::AvFramePtr scaledToFrame;
+        if (toScene.effects.ken_burns.enabled) {
+            // 同步音频时长
+            double toSceneDuration = toScene.duration;
+            AudioDecoder tempAudioDecoder;
+            if (!toScene.resources.audio.path.empty() && tempAudioDecoder.open(toScene.resources.audio.path)) {
+                double audioDuration = tempAudioDecoder.getDuration();
+                if (audioDuration > 0) toSceneDuration = audioDuration;
+                tempAudioDecoder.close();
+            }
+            int totalFramesInToScene = static_cast<int>(std::round(toSceneDuration * m_config.project.fps));
+            if (totalFramesInToScene <= 0) totalFramesInToScene = 1;
+
+            auto originalToFrame = toDecoder.decode();
+            if (!originalToFrame) {
+                m_errorString = "解码 'to' 场景的原始图片失败";
+                return false;
+            }
+            scaledToFrame = toDecoder.scaleToSize(originalToFrame, m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P);
+            if (!scaledToFrame) {
+                m_errorString = "缩放 'to' 场景图片失败，原因: " + toDecoder.getErrorString();
+                return false;
+            }
+            scaledToFrame->pts = 0;
+
+            EffectProcessor toSceneProcessor;
+            toSceneProcessor.initialize(m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P, m_config.project.fps);
+            if (toSceneProcessor.processKenBurnsEffect(toScene.effects.ken_burns, scaledToFrame.get(), totalFramesInToScene)) {
+                const AVFrame* firstKbFrame = toSceneProcessor.getKenBurnsFrame(0);
+                if (firstKbFrame) {
+                    scaledToFrame = FFmpegUtils::copyAvFrame(firstKbFrame);
+                } else {
+                    m_errorString = "'to' 场景 Ken Burns 特效处理后未能获取第一帧: " + toSceneProcessor.getErrorString();
+                    return false;
+                }
+            } else {
+                m_errorString = "处理 'to' 场景的 Ken Burns 特效失败: " + toSceneProcessor.getErrorString();
+                return false;
+            }
+        } else {
+            auto toFrame = toDecoder.decode();
+            if (!toFrame) {
+                m_errorString = "解码 'to' 帧失败";
+                return false;
+            }
+            scaledToFrame = toDecoder.scaleToSize(toFrame, m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P);
+            if (!scaledToFrame) {
+                m_errorString = "缩放 'to' 帧失败";
+                return false;
+            }
         }
         
         // --- Apply transition ---
