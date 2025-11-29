@@ -42,10 +42,6 @@ void AudioPlayer::play()
         if (m_audioDecoder)
             m_audioDecoder->requestResume();
 
-        m_clockOffset = m_currentPosition.load();
-        m_masterClock.restart();
-        m_timer->start(16);
-        
         emit pausedStateChanged(false);
         emit playingStateChanged(true);
     }
@@ -54,7 +50,6 @@ void AudioPlayer::play()
 void AudioPlayer::pause()
 {
     if (!m_isPaused.load()) {
-        m_timer->stop();
         m_isPaused.store(true);
 
         if (m_demuxer)
@@ -84,9 +79,7 @@ void AudioPlayer::seek(qint64 position)
         m_audioDecoder->requestFlush();
 
     m_currentPosition = position;
-    m_clockOffset = position;
     emit positionChanged(position);
-    m_masterClock.restart();
 }
 
 void AudioPlayer::setVolume(float volume)
@@ -177,6 +170,10 @@ void AudioPlayer::onDemuxerOpened(qint64 duration, int videoStreamIndex, int aud
         m_audioDecoder = new AudioDecoder(this);
         if (m_audioDecoder->init(m_demuxer->formatContext(), audioStreamIndex)) {
             m_audioDecoder->setDemuxer(m_demuxer);
+            connect(m_audioDecoder, &AudioDecoder::audioClockUpdated, this, [this](qint64 clockMs) {
+                m_currentPosition = clockMs;
+                emit positionChanged(clockMs);
+            });
             m_audioDecoder->start();
         } else {
             delete m_audioDecoder;
@@ -184,22 +181,15 @@ void AudioPlayer::onDemuxerOpened(qint64 duration, int videoStreamIndex, int aud
         }
     }
 
-    // 启动 Demuxer 线程
-    m_demuxer->start();
-
     // 启动定时器
     m_isPaused = false;
     emit pausedStateChanged(false);
     emit playingStateChanged(true);
-    m_clockOffset = 0;
-    m_masterClock.start();
-    m_timer->start(16); // 约60fps
 }
 
 void AudioPlayer::onDemuxerEndOfFile()
 {
     qDebug() << "AudioPlayer: 播放结束";
-    m_timer->stop();
     m_isPaused = true;
     emit pausedStateChanged(true);
     emit playingStateChanged(false);
@@ -208,12 +198,9 @@ void AudioPlayer::onDemuxerEndOfFile()
 
 void AudioPlayer::onTimerFire()
 {
-    // 根据时钟更新位置
-    qint64 elapsed = m_masterClock.elapsed() + m_clockOffset.load();
-    if (elapsed < m_totalDuration.load()) {
-        m_currentPosition = elapsed;
-        emit positionChanged(elapsed);
-    }
+    // 定时推送当前位置，位置由音频时钟驱动
+    qint64 clockMs = m_currentPosition.load();
+    emit positionChanged(clockMs);
 }
 
 void AudioPlayer::onDemuxerFailedToOpen(const QString &error)
@@ -247,7 +234,6 @@ void AudioPlayer::cleanup()
     m_audioStreamIndex = -1;
     m_totalDuration = 0;
     m_currentPosition = 0;
-    m_clockOffset = 0;
     m_isPaused = false;
     m_isStopped = true;
 

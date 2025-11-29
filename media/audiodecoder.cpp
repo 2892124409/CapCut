@@ -34,6 +34,8 @@ bool AudioDecoder::init(AVFormatContext *formatCtx, int audioStreamIndex) {
 
   m_streamIndex = audioStreamIndex;
   AVCodecParameters *codecPar = formatCtx->streams[audioStreamIndex]->codecpar;
+  m_timeBase = formatCtx->streams[audioStreamIndex]->time_base;
+  m_lastPtsMs = 0;
 
   const AVCodec *codec = avcodec_find_decoder(codecPar->codec_id);
   if (!codec) {
@@ -198,6 +200,15 @@ void AudioDecoder::processPacket(AVPacket *packet) {
           swr_convert(m_swrCtx.get(), &buffer, out_samples,
                       (const uint8_t **)m_frame->data, m_frame->nb_samples);
 
+      qint64 ptsMs = 0;
+      if (m_frame->best_effort_timestamp != AV_NOPTS_VALUE) {
+        ptsMs = av_rescale_q(m_frame->best_effort_timestamp, m_timeBase,
+                             AVRational{1, 1000});
+      } else if (packet && packet->pts != AV_NOPTS_VALUE) {
+        ptsMs = av_rescale_q(packet->pts, m_timeBase, AVRational{1, 1000});
+      }
+      m_lastPtsMs = ptsMs;
+
       if (frame_count > 0 && m_audioDevice) {
         m_audioDevice->write((const char *)buffer, frame_count * 2 * 2);
       }
@@ -208,9 +219,31 @@ void AudioDecoder::processPacket(AVPacket *packet) {
         av_freep(&buffer);
       }
 
+      qint64 clockMs = ptsMs;
+      qint64 delayMs = bufferedMilliseconds();
+      if (delayMs > 0)
+        clockMs = qMax<qint64>(0, ptsMs - delayMs);
+      emit audioClockUpdated(clockMs);
       emit audioDecoded();
     }
   }
+}
+
+qint64 AudioDecoder::bufferedMilliseconds() const {
+  if (!m_audioSink)
+    return 0;
+
+  const int sampleRate = m_outputFormat.sampleRate();
+  const int bytesPerFrame = m_outputFormat.bytesPerFrame();
+  if (sampleRate <= 0 || bytesPerFrame <= 0)
+    return 0;
+
+  const qint64 bytesPerSec = qint64(sampleRate) * bytesPerFrame;
+  qint64 queued = m_audioSink->bufferSize() - m_audioSink->bytesFree();
+  if (queued < 0)
+    queued = 0;
+
+  return bytesPerSec > 0 ? queued * 1000 / bytesPerSec : 0;
 }
 
 bool AudioDecoder::recreateAudioOutput() {

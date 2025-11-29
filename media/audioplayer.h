@@ -4,7 +4,6 @@
 #include "imediaplayer.h"
 #include "demuxer.h"
 #include "audiodecoder.h"
-#include <QElapsedTimer>
 #include <QTimer>
 #include <atomic>
 
@@ -55,7 +54,6 @@ private:
 
     // Qt 核心组件
     QTimer *m_timer = nullptr;
-    QElapsedTimer m_masterClock;
 
     // 多线程组件
     Demuxer *m_demuxer = nullptr;
@@ -64,7 +62,6 @@ private:
     // 状态变量
     std::atomic<qint64> m_totalDuration{0};
     std::atomic<qint64> m_currentPosition{0};
-    std::atomic<qint64> m_clockOffset{0};
     std::atomic<bool> m_isPaused{false};
     std::atomic<bool> m_isStopped{true};
 

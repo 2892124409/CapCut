@@ -7,7 +7,6 @@
 #include "videodecoder.h"
 #include <QQuickItem>
 #include <QReadWriteLock>
-#include <QElapsedTimer>
 #include <QTimer>
 #include <atomic>
 
@@ -61,7 +60,6 @@ private:
     QTimer *m_timer = nullptr;
     QImage m_currentImage;
     mutable QReadWriteLock m_imageLock;
-    QElapsedTimer m_masterClock;
 
     // 多线程组件
     Demuxer *m_demuxer = nullptr;
@@ -71,7 +69,6 @@ private:
     // 状态变量
     std::atomic<qint64> m_totalDuration{0};
     std::atomic<qint64> m_currentPosition{0};
-    std::atomic<qint64> m_clockOffset{0};
     std::atomic<bool> m_isPaused{false};
     std::atomic<bool> m_isStopped{true};
 
@@ -81,6 +78,11 @@ private:
 
     // 纯音频播放相关
     bool m_isAudioOnly = false;
+    std::atomic<qint64> m_audioClockMs{0};
+
+    // 提前到达的帧缓存，等音频时钟追上再显示
+    VideoFrame m_pendingFrame;
+    bool m_hasPendingFrame = false;
 };
 
 #endif // VIDEOPLAYER_IMPL_H

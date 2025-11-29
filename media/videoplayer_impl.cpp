@@ -45,8 +45,6 @@ void VideoPlayerImpl::play()
         if (m_videoDecoder)
             m_videoDecoder->requestResume();
 
-        m_clockOffset = m_currentPosition.load();
-        m_masterClock.restart();
         m_timer->start(16);
         
         emit pausedStateChanged(false);
@@ -94,9 +92,7 @@ void VideoPlayerImpl::seek(qint64 position)
     }
 
     m_currentPosition = position;
-    m_clockOffset = position;
     emit positionChanged(position);
-    m_masterClock.restart();
 }
 
 void VideoPlayerImpl::setVolume(float volume)
@@ -202,6 +198,11 @@ void VideoPlayerImpl::onDemuxerOpened(qint64 duration, int videoStreamIndex, int
         m_audioDecoder = new AudioDecoder(this);
         if (m_audioDecoder->init(m_demuxer->formatContext(), audioStreamIndex)) {
             m_audioDecoder->setDemuxer(m_demuxer);
+            connect(m_audioDecoder, &AudioDecoder::audioClockUpdated, this, [this](qint64 clockMs) {
+                m_audioClockMs = clockMs;
+                m_currentPosition = clockMs;
+                emit positionChanged(clockMs);
+            });
             m_audioDecoder->start();
         } else {
             delete m_audioDecoder;
@@ -209,15 +210,10 @@ void VideoPlayerImpl::onDemuxerOpened(qint64 duration, int videoStreamIndex, int
         }
     }
 
-    // 启动 Demuxer 线程
-    m_demuxer->start();
-
     // 启动渲染定时器
     m_isPaused = false;
     emit pausedStateChanged(false);
     emit playingStateChanged(true);
-    m_clockOffset = 0;
-    m_masterClock.start();
     m_timer->start(16); // 约60fps
 }
 
@@ -234,30 +230,69 @@ void VideoPlayerImpl::onDemuxerEndOfFile()
 void VideoPlayerImpl::onTimerFire()
 {
     if (m_isAudioOnly) {
-        // 纯音频模式,根据时钟更新位置
-        qint64 elapsed = m_masterClock.elapsed() + m_clockOffset.load();
-        if (elapsed < m_totalDuration.load()) {
-            m_currentPosition = elapsed;
-            emit positionChanged(elapsed);
+        qint64 audioClock = m_audioClockMs.load();
+        if (audioClock > 0) {
+            m_currentPosition = audioClock;
+            emit positionChanged(audioClock);
         }
         return;
     }
 
-    // 视频模式,从 VideoDecoder 获取帧
-    if (m_videoDecoder) {
-        VideoFrame frame;
-        if (m_videoDecoder->popFrame(frame)) {
-            {
-                QWriteLocker locker(&m_imageLock);
-                m_currentImage = frame.image;
-                m_currentPosition = frame.pts;
-                m_clockOffset = frame.pts;
-                m_masterClock.restart();
-            }
-            emit positionChanged(frame.pts);
-            emit frameChanged(frame.image);
+    // 视频模式,从 VideoDecoder 获取帧并对齐音频时钟
+    if (!m_videoDecoder)
+        return;
+
+    static constexpr qint64 kMaxLeadMs = 80; // 视频超前音频的容忍度
+    static constexpr qint64 kMaxLagMs = 120; // 视频落后音频的容忍度
+
+    VideoFrame frame;
+    auto fetchFrame = [&]() -> bool {
+        if (m_hasPendingFrame) {
+            frame = m_pendingFrame;
+            m_hasPendingFrame = false;
+            return true;
         }
+        return m_videoDecoder->popFrame(frame);
+    };
+
+    bool hasFrame = fetchFrame();
+    while (hasFrame) {
+        qint64 audioClock = m_audioClockMs.load();
+        if (audioClock <= 0) {
+            // 没有音频时钟(纯视频或音频尚未输出)，直接显示
+            break;
+        }
+
+        qint64 delta = frame.pts - audioClock;
+        if (delta < -kMaxLagMs) {
+            // 视频太晚,丢帧追赶
+            hasFrame = fetchFrame();
+            continue;
+        }
+
+        if (delta > kMaxLeadMs) {
+            // 视频太早,缓存这帧等待音频追上
+            m_pendingFrame = frame;
+            m_hasPendingFrame = true;
+            return;
+        }
+        // 在容忍范围内
+        break;
     }
+
+    if (!hasFrame || frame.image.isNull())
+        return;
+
+    {
+        QWriteLocker locker(&m_imageLock);
+        m_currentImage = frame.image;
+    }
+
+    qint64 audioClock = m_audioClockMs.load();
+    qint64 reportPos = audioClock > 0 ? audioClock : frame.pts;
+    m_currentPosition = reportPos;
+    emit positionChanged(reportPos);
+    emit frameChanged(frame.image);
 }
 
 void VideoPlayerImpl::onDemuxerFailedToOpen(const QString &error)
@@ -309,10 +344,11 @@ void VideoPlayerImpl::cleanup()
     m_audioStreamIndex = -1;
     m_totalDuration = 0;
     m_currentPosition = 0;
+    m_audioClockMs = 0;
     m_isAudioOnly = false;
-    m_clockOffset = 0;
     m_isPaused = false;
     m_isStopped = true;
+    m_hasPendingFrame = false;
 
     emit positionChanged(0);
     emit durationChanged(0);

@@ -38,6 +38,7 @@ public:
 
 signals:
   void audioDecoded();
+  void audioClockUpdated(qint64 positionMs);
 
 protected:
   void run() override;
@@ -46,11 +47,14 @@ private:
   // 辅助函数
   bool recreateAudioOutput();
   void processPacket(AVPacket *packet);
+  qint64 bufferedMilliseconds() const;
 
   FFmpeg::TrackedAVCodecContext m_codecCtx;
   FFmpeg::TrackedAVFrame m_frame;
   FFmpeg::TrackedSwrContext m_swrCtx;
   int m_streamIndex = -1;
+  AVRational m_timeBase{0, 1};
+  qint64 m_lastPtsMs = 0;
 
   QAudioSink *m_audioSink = nullptr;
   QIODevice *m_audioDevice = nullptr;
