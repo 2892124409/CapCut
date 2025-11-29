@@ -7,7 +7,7 @@ Window {
     width: 1000
     height: 700
     visible: true
-    title: qsTr("剪映实习生 - 全功能播放器 (C++ FFmpeg OpenGL)")
+    title: qsTr("剪映实习生 - 视频播放器 (C++ FFmpeg)")
     flags: Qt.Window | Qt.WindowTitleHint | Qt.WindowSystemMenuHint | Qt.WindowMinMaxButtonsHint | Qt.WindowCloseButtonHint
 
     // 键盘焦点容器 - 强制焦点管理
@@ -34,8 +34,8 @@ Window {
         Keys.onPressed: (event) => {
             switch(event.key) {
                 case Qt.Key_Space:
-                    if (mediaController.paused) mediaController.pause()
-                    else mediaController.play()
+                    if (mediaController.paused) mediaController.play()
+                    else mediaController.pause()
                     event.accepted = true
                     break
                 case Qt.Key_Left:
@@ -127,19 +127,9 @@ Window {
             }
 
             Text {
-                id: fileTypeText
-                text: fileManager.currentFileType === "video" ? "🎥 视频" : 
-                      fileManager.currentFileType === "image" ? "🖼️ 图片" : 
-                      fileManager.currentFileType === "audio" ? "🎵 音频" : ""
-                color: "#aaa"
-                font.pixelSize: 12
-                anchors.verticalCenter: parent.verticalCenter
-            }
-
-            Text {
                 id: fileCountText
-                text: fileManager.mediaFiles.length > 0 ? 
-                      "文件 " + (fileManager.currentIndex + 1) + "/" + fileManager.mediaFiles.length : ""
+                text: fileManager.videoFiles.length > 0 ? 
+                      "文件 " + (fileManager.currentIndex + 1) + "/" + fileManager.videoFiles.length : ""
                 color: "#aaa"
                 font.pixelSize: 12
                 anchors.verticalCenter: parent.verticalCenter
@@ -150,21 +140,15 @@ Window {
     // 文件选择对话框
     FileDialog {
         id: fileDialog
-        title: "请选择媒体文件"
+        title: "请选择视频文件"
         nameFilters: [
-            // 1. 【新增】将这个放在第一位，作为默认选项
-            "媒体文件 (*.mp4 *.avi *.mkv *.mov *.wmv *.flv *.webm *.m4v *.3gp *.ts *.jpg *.jpeg *.png *.bmp *.gif *.tiff *.tif *.webp *.ico *.svg *.mp3 *.wav *.flac *.aac *.ogg *.m4a *.wma *.opus *.aiff *.ape)",
-            
-            // 2. 原有的分类选项
             "视频文件 (*.mp4 *.avi *.mkv *.mov *.wmv *.flv *.webm *.m4v *.3gp *.ts)",
-            "图片文件 (*.jpg *.jpeg *.png *.bmp *.gif *.tiff *.tif *.webp *.ico *.svg)",
-            "音频文件 (*.mp3 *.wav *.flac *.aac *.ogg *.m4a *.wma *.opus *.aiff *.ape)",
             "所有文件 (*)"
         ]
         onAccepted: {
             var filePath = fileDialog.selectedFile.toString().replace("file:///", "")
             // 扫描文件夹并设置当前文件
-            fileManager.scanFolderForMedia(filePath)
+            fileManager.scanFolderForFile(filePath)
             
             // 使用统一的加载方法
             mediaController.loadMedia(filePath)
@@ -174,10 +158,7 @@ Window {
     // 底部控制条
     Rectangle {
         id: controls
-
-
-
-        height: mediaController.mediaType === "image" ? 60 : 90
+        height: 90
         color: "#1a1a1a"
         anchors.bottom: parent.bottom
         anchors.left: parent.left
@@ -201,9 +182,6 @@ Window {
                 id: progressBarContainer
                 width: parent.width
                 height: 30
-
-                // 【修改点 2】如果是图片模式，直接隐藏进度条
-                visible: mediaController.mediaType !== "image"
 
                 // 进度条背景
                 Rectangle {
@@ -362,9 +340,9 @@ Window {
                 height: 40
                 spacing: 15
 
-                // 1. 选择媒体文件按钮 (最左边)
+                // 1. 选择视频文件按钮 (最左边)
                 Button {
-                    text: "📁 选择媒体文件"
+                    text: "📁 选择视频文件"
                     font.bold: true
                     font.pixelSize: 14
                     width: 140
@@ -414,14 +392,12 @@ Window {
                             verticalAlignment: Text.AlignVCenter
                         }
                         focusPolicy: Qt.NoFocus
-                        // ... inside prevButton ...
-onClicked: {
-    var prevFile = fileManager.getPreviousFile()
-    if (prevFile) {
-        // 使用统一的加载方法
-        mediaController.loadMedia(prevFile)
-    }
-}
+                        onClicked: {
+                            var prevFile = fileManager.getPreviousFile()
+                            if (prevFile) {
+                                mediaController.loadMedia(prevFile)
+                            }
+                        }
                     }
 
                     // 3. 播放/暂停按钮 (居中)
@@ -464,14 +440,12 @@ onClicked: {
                             verticalAlignment: Text.AlignVCenter
                         }
                         focusPolicy: Qt.NoFocus
-                        // ... inside nextButton ...
-onClicked: {
-    var nextFile = fileManager.getNextFile()
-    if (nextFile) {
-        // 使用统一的加载方法
-        mediaController.loadMedia(nextFile)
-    }
-}
+                        onClicked: {
+                            var nextFile = fileManager.getNextFile()
+                            if (nextFile) {
+                                mediaController.loadMedia(nextFile)
+                            }
+                        }
                     }
                 }
 

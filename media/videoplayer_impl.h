@@ -5,7 +5,6 @@
 #include "demuxer.h"
 #include "audiodecoder.h"
 #include "videodecoder.h"
-#include <QQuickItem>
 #include <QReadWriteLock>
 #include <QTimer>
 #include <atomic>
@@ -35,16 +34,7 @@ public:
     bool isPlaying() const override;
     bool isPaused() const override;
     bool isStopped() const override;
-    QString mediaType() const override;
-
     QImage currentFrame() const override;
-    bool supportsZoom() const override;
-    bool supportsRotation() const override;
-    qreal zoomLevel() const override;
-    qreal rotationAngle() const override;
-    void setZoomLevel(qreal zoom) override;
-    void setRotationAngle(qreal angle) override;
-    void resetTransform() override;
 
 private slots:
       void onDemuxerOpened(qint64 duration, int videoStreamIndex, int audioStreamIndex);
@@ -52,8 +42,6 @@ private slots:
       void onDemuxerFailedToOpen(const QString &error); // NEW: Slot for demuxer open failure
       void onTimerFire();
 private:
-    // 私有方法
-    void updateTransformMatrix();
     void cleanup();
 
     // Qt 核心组件
@@ -77,7 +65,6 @@ private:
     int m_audioStreamIndex = -1;
 
     // 纯音频播放相关
-    bool m_isAudioOnly = false;
     std::atomic<qint64> m_audioClockMs{0};
 
     // 提前到达的帧缓存，等音频时钟追上再显示

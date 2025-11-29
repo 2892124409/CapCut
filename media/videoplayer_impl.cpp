@@ -1,6 +1,5 @@
 #include "videoplayer_impl.h"
 #include <QDebug>
-#include <QQuickWindow>
 
 VideoPlayerImpl::VideoPlayerImpl(QObject *parent)
     : IMediaPlayer(parent)
@@ -126,50 +125,10 @@ bool VideoPlayerImpl::isStopped() const
     return m_isStopped.load();
 }
 
-QString VideoPlayerImpl::mediaType() const
-{
-    return m_isAudioOnly ? "audio" : "video";
-}
-
 QImage VideoPlayerImpl::currentFrame() const
 {
     QReadLocker locker(&m_imageLock);
     return m_currentImage;
-}
-
-bool VideoPlayerImpl::supportsZoom() const
-{
-    return false; // 视频不支持缩放
-}
-
-bool VideoPlayerImpl::supportsRotation() const
-{
-    return false; // 视频不支持旋转
-}
-
-qreal VideoPlayerImpl::zoomLevel() const
-{
-    return 1.0; // 视频固定缩放级别
-}
-
-qreal VideoPlayerImpl::rotationAngle() const
-{
-    return 0.0; // 视频固定旋转角度
-}
-
-void VideoPlayerImpl::setZoomLevel(qreal zoom)
-{
-    // 视频不支持缩放
-}
-
-void VideoPlayerImpl::setRotationAngle(qreal angle)
-{
-    // 视频不支持旋转
-}
-
-void VideoPlayerImpl::resetTransform()
-{
-    // 视频不支持变换
 }
 
 void VideoPlayerImpl::onDemuxerOpened(qint64 duration, int videoStreamIndex, int audioStreamIndex)
@@ -179,18 +138,23 @@ void VideoPlayerImpl::onDemuxerOpened(qint64 duration, int videoStreamIndex, int
     m_audioStreamIndex = audioStreamIndex;
     emit durationChanged(duration);
 
-    m_isAudioOnly = (videoStreamIndex == -1 && audioStreamIndex != -1);
+    if (videoStreamIndex == -1) {
+        emit errorOccurred("未找到可用的视频流");
+        cleanup();
+        return;
+    }
 
     // 初始化并启动视频解码器
-    if (videoStreamIndex != -1) {
-        m_videoDecoder = new VideoDecoder(this);
-        if (m_videoDecoder->init(m_demuxer->formatContext(), videoStreamIndex)) {
-            m_videoDecoder->setDemuxer(m_demuxer);
-            m_videoDecoder->start();
-        } else {
-            delete m_videoDecoder;
-            m_videoDecoder = nullptr;
-        }
+    m_videoDecoder = new VideoDecoder(this);
+    if (m_videoDecoder->init(m_demuxer->formatContext(), videoStreamIndex)) {
+        m_videoDecoder->setDemuxer(m_demuxer);
+        m_videoDecoder->start();
+    } else {
+        delete m_videoDecoder;
+        m_videoDecoder = nullptr;
+        emit errorOccurred("视频解码器初始化失败");
+        cleanup();
+        return;
     }
 
     // 初始化并启动音频解码器
@@ -222,22 +186,15 @@ void VideoPlayerImpl::onDemuxerEndOfFile()
     qDebug() << "VideoPlayerImpl: 播放结束";
     m_timer->stop();
     m_isPaused = true;
+    m_isStopped = true;
     emit pausedStateChanged(true);
     emit playingStateChanged(false);
+    emit stoppedStateChanged(true);
     emit mediaEnded();
 }
 
 void VideoPlayerImpl::onTimerFire()
 {
-    if (m_isAudioOnly) {
-        qint64 audioClock = m_audioClockMs.load();
-        if (audioClock > 0) {
-            m_currentPosition = audioClock;
-            emit positionChanged(audioClock);
-        }
-        return;
-    }
-
     // 视频模式,从 VideoDecoder 获取帧并对齐音频时钟
     if (!m_videoDecoder)
         return;
@@ -300,13 +257,7 @@ void VideoPlayerImpl::onDemuxerFailedToOpen(const QString &error)
     qDebug() << "VideoPlayerImpl: 文件打开失败:" << error;
     // 清理所有资源并更新状态
     cleanup();
-    // 可以在这里发出一个更高级别的错误信号通知 UI
-    // emit errorOccurred(error);
-}
-
-void VideoPlayerImpl::updateTransformMatrix()
-{
-    // 视频不支持变换
+    emit errorOccurred(error);
 }
 
 void VideoPlayerImpl::cleanup()
@@ -345,7 +296,6 @@ void VideoPlayerImpl::cleanup()
     m_totalDuration = 0;
     m_currentPosition = 0;
     m_audioClockMs = 0;
-    m_isAudioOnly = false;
     m_isPaused = false;
     m_isStopped = true;
     m_hasPendingFrame = false;

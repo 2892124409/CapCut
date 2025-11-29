@@ -29,11 +29,6 @@ class MediaController : public QQuickItem {
     Q_PROPERTY(bool playing READ isPlaying NOTIFY playingStateChanged)
     Q_PROPERTY(bool paused READ isPaused NOTIFY pausedStateChanged)
     Q_PROPERTY(bool stopped READ isStopped NOTIFY stoppedStateChanged)
-    Q_PROPERTY(QString mediaType READ mediaType NOTIFY mediaTypeChanged)
-    Q_PROPERTY(qreal zoomLevel READ zoomLevel NOTIFY zoomLevelChanged)
-    Q_PROPERTY(qreal rotationAngle READ rotationAngle NOTIFY rotationAngleChanged)
-    Q_PROPERTY(bool supportsZoom READ supportsZoom NOTIFY supportsZoomChanged)
-    Q_PROPERTY(bool supportsRotation READ supportsRotation NOTIFY supportsRotationChanged)
 
 public:
     explicit MediaController(QQuickItem *parent = nullptr);
@@ -50,24 +45,12 @@ public:
     Q_INVOKABLE void seek(qint64 position);
     Q_INVOKABLE void setVolume(float volume);
 
-    // 图片操作接口
-    Q_INVOKABLE void zoomIn();
-    Q_INVOKABLE void zoomOut();
-    Q_INVOKABLE void resetZoom();
-    Q_INVOKABLE void rotateLeft();
-    Q_INVOKABLE void rotateRight();
-
     // 属性读取器
     qint64 duration() const;
     qint64 position() const;
     bool isPlaying() const;
     bool isPaused() const;
     bool isStopped() const;
-    QString mediaType() const;
-    qreal zoomLevel() const;
-    qreal rotationAngle() const;
-    bool supportsZoom() const;
-    bool supportsRotation() const;
 
 signals:
     void durationChanged();
@@ -75,11 +58,6 @@ signals:
     void playingStateChanged();
     void pausedStateChanged();
     void stoppedStateChanged();
-    void mediaTypeChanged();
-    void zoomLevelChanged();
-    void rotationAngleChanged();
-    void supportsZoomChanged();
-    void supportsRotationChanged();
     void errorOccurred(const QString &error);
 
 private slots:
@@ -89,8 +67,6 @@ private slots:
     void onPlayingStateChanged(bool playing);
     void onPausedStateChanged(bool paused);
     void onStoppedStateChanged(bool stopped);
-    void onZoomLevelChanged(qreal zoom);
-    void onRotationAngleChanged(qreal angle);
     void onMediaEnded();
     void onErrorOccurred(const QString &error);
 
@@ -125,11 +101,6 @@ private:
     std::atomic<bool> m_cachedPlaying{false};
     std::atomic<bool> m_cachedPaused{false};
     std::atomic<bool> m_cachedStopped{true};
-    QString m_cachedMediaType;
-    qreal m_cachedZoomLevel = 1.0;
-    qreal m_cachedRotationAngle = 0.0;
-    bool m_cachedSupportsZoom = false;
-    bool m_cachedSupportsRotation = false;
 };
 
 #endif // MEDIACONTROLLER_H

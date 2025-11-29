@@ -1,7 +1,5 @@
 #include "mediacontroller.h"
 #include "videoplayer_impl.h"
-#include "imageviewer.h"
-#include "audioplayer.h"
 #include <QDebug>
 #include <QQuickWindow>
 #include <QSGSimpleTextureNode>
@@ -48,8 +46,6 @@ bool MediaController::loadMedia(const QString &filePath)
     connect(m_currentPlayer, &IMediaPlayer::playingStateChanged, this, &MediaController::onPlayingStateChanged);
     connect(m_currentPlayer, &IMediaPlayer::pausedStateChanged, this, &MediaController::onPausedStateChanged);
     connect(m_currentPlayer, &IMediaPlayer::stoppedStateChanged, this, &MediaController::onStoppedStateChanged);
-    connect(m_currentPlayer, &IMediaPlayer::zoomLevelChanged, this, &MediaController::onZoomLevelChanged);
-    connect(m_currentPlayer, &IMediaPlayer::rotationAngleChanged, this, &MediaController::onRotationAngleChanged);
     connect(m_currentPlayer, &IMediaPlayer::mediaEnded, this, &MediaController::onMediaEnded);
     connect(m_currentPlayer, &IMediaPlayer::errorOccurred, this, &MediaController::onErrorOccurred);
     
@@ -97,56 +93,12 @@ void MediaController::setVolume(float volume)
     }
 }
 
-void MediaController::zoomIn()
-{
-    if (m_currentPlayer && m_currentPlayer->supportsZoom()) {
-        qreal currentZoom = m_currentPlayer->zoomLevel();
-        m_currentPlayer->setZoomLevel(qMin(currentZoom * 1.2, 10.0));
-    }
-}
-
-void MediaController::zoomOut()
-{
-    if (m_currentPlayer && m_currentPlayer->supportsZoom()) {
-        qreal currentZoom = m_currentPlayer->zoomLevel();
-        m_currentPlayer->setZoomLevel(qMax(currentZoom / 1.2, 0.1));
-    }
-}
-
-void MediaController::resetZoom()
-{
-    if (m_currentPlayer && m_currentPlayer->supportsZoom()) {
-        m_currentPlayer->resetTransform();
-    }
-}
-
-void MediaController::rotateLeft()
-{
-    if (m_currentPlayer && m_currentPlayer->supportsRotation()) {
-        qreal currentAngle = m_currentPlayer->rotationAngle();
-        m_currentPlayer->setRotationAngle(currentAngle - 90.0);
-    }
-}
-
-void MediaController::rotateRight()
-{
-    if (m_currentPlayer && m_currentPlayer->supportsRotation()) {
-        qreal currentAngle = m_currentPlayer->rotationAngle();
-        m_currentPlayer->setRotationAngle(currentAngle + 90.0);
-    }
-}
-
 // 属性读取器实现
 qint64 MediaController::duration() const { return m_cachedDuration.load(); }
 qint64 MediaController::position() const { return m_cachedPosition.load(); }
 bool MediaController::isPlaying() const { return m_cachedPlaying.load(); }
 bool MediaController::isPaused() const { return m_cachedPaused.load(); }
 bool MediaController::isStopped() const { return m_cachedStopped.load(); }
-QString MediaController::mediaType() const { return m_cachedMediaType; }
-qreal MediaController::zoomLevel() const { return m_cachedZoomLevel; }
-qreal MediaController::rotationAngle() const { return m_cachedRotationAngle; }
-bool MediaController::supportsZoom() const { return m_cachedSupportsZoom; }
-bool MediaController::supportsRotation() const { return m_cachedSupportsRotation; }
 
 // 槽函数实现
 void MediaController::onFrameChanged(const QImage &frame)
@@ -186,18 +138,6 @@ void MediaController::onStoppedStateChanged(bool stopped)
     emit stoppedStateChanged();
 }
 
-void MediaController::onZoomLevelChanged(qreal zoom)
-{
-    m_cachedZoomLevel = zoom;
-    emit zoomLevelChanged();
-}
-
-void MediaController::onRotationAngleChanged(qreal angle)
-{
-    m_cachedRotationAngle = angle;
-    emit rotationAngleChanged();
-}
-
 void MediaController::onMediaEnded()
 {
     qDebug() << "MediaController: 媒体播放结束";
@@ -216,24 +156,12 @@ IMediaPlayer* MediaController::createMediaPlayer(const QString &filePath)
     QFileInfo fileInfo(filePath);
     QString extension = fileInfo.suffix().toLower();
     
-    // 根据文件扩展名创建对应的播放器
+    // 仅支持视频格式
     if (extension == "mp4" || extension == "avi" || extension == "mkv" || 
         extension == "mov" || extension == "wmv" || extension == "flv" ||
         extension == "webm" || extension == "m4v" || extension == "3gp" ||
         extension == "ts") {
         return new VideoPlayerImpl(this);
-    }
-    else if (extension == "jpg" || extension == "jpeg" || extension == "png" ||
-             extension == "bmp" || extension == "gif" || extension == "tiff" ||
-             extension == "tif" || extension == "webp" || extension == "ico" ||
-             extension == "svg") {
-        return new ImageViewer(this);
-    }
-    else if (extension == "mp3" || extension == "wav" || extension == "flac" ||
-             extension == "aac" || extension == "ogg" || extension == "m4a" ||
-             extension == "wma" || extension == "opus" || extension == "aiff" ||
-             extension == "ape") {
-        return new AudioPlayer(this);
     }
     
     return nullptr;
@@ -253,11 +181,6 @@ void MediaController::cleanupCurrentPlayer()
     m_cachedPlaying.store(false);
     m_cachedPaused.store(false);
     m_cachedStopped.store(true);
-    m_cachedMediaType.clear();
-    m_cachedZoomLevel = 1.0;
-    m_cachedRotationAngle = 0.0;
-    m_cachedSupportsZoom = false;
-    m_cachedSupportsRotation = false;
     
     {
         QWriteLocker locker(&m_frameLock);
@@ -269,11 +192,6 @@ void MediaController::cleanupCurrentPlayer()
     emit playingStateChanged();
     emit pausedStateChanged();
     emit stoppedStateChanged();
-    emit mediaTypeChanged();
-    emit zoomLevelChanged();
-    emit rotationAngleChanged();
-    emit supportsZoomChanged();
-    emit supportsRotationChanged();
 }
 
 QSGNode* MediaController::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *)

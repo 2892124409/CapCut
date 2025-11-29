@@ -37,8 +37,6 @@ qt_add_qml_module(appmedia
     ffmpeg_resource_manager.h
     filemanager.h
     filemanager.cpp
-    imagedecoder.h
-    imagedecoder.cpp
     
     # 重构新增文件
     imediaplayer.h
@@ -46,10 +44,6 @@ qt_add_qml_module(appmedia
     mediacontroller.cpp
     videoplayer_impl.h
     videoplayer_impl.cpp
-    imageviewer.h
-    imageviewer.cpp
-    audioplayer.h
-    audioplayer.cpp
 )
 
 # ==========================================
