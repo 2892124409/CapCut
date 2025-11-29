@@ -133,7 +133,13 @@ namespace VideoCreator
 
     bool AudioDecoder::initFilterGraph(const SceneConfig& sceneConfig)
     {
-        cleanup(); // Cleanup previous filter graph if any
+        // 仅清理旧的滤镜图，避免破坏已打开的解码/重采样上下文
+        if (m_filterGraph) {
+            avfilter_graph_free(&m_filterGraph);
+            m_filterGraph = nullptr;
+            m_bufferSrcCtx = nullptr;
+            m_bufferSinkCtx = nullptr;
+        }
 
         m_filterGraph = avfilter_graph_alloc();
         if (!m_filterGraph) {

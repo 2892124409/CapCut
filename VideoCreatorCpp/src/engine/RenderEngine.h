@@ -52,6 +52,8 @@ namespace VideoCreator
         // 渲染转场
         bool renderTransition(const SceneConfig &transitionScene, const SceneConfig &fromScene, const SceneConfig &toScene);
 
+        // 为转场生成音频淡入淡出 / 交叉混音
+        bool renderAudioTransition(const SceneConfig &fromScene, const SceneConfig &toScene, double duration_seconds);
 
         // 生成测试帧 (用于演示)
         FFmpegUtils::AvFramePtr generateTestFrame(int frameIndex, int width, int height);
@@ -77,6 +79,9 @@ namespace VideoCreator
         AVAudioFifo *m_audioFifo;
         int m_frameCount;
         int64_t m_audioSamplesCount;
+
+        // 是否启用音频转场效果（默认关闭，保留实现以便未来开启）
+        bool m_enableAudioTransition;
     };
 
 } // namespace VideoCreator

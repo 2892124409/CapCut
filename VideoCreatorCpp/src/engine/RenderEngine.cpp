@@ -5,6 +5,8 @@
 #include "ffmpeg_utils/AvFrameWrapper.h"
 #include "ffmpeg_utils/AvPacketWrapper.h"
 #include <QDebug>
+#include <vector>
+#include <algorithm>
 #include <cmath>
 
 namespace VideoCreator
@@ -57,7 +59,7 @@ namespace VideoCreator
 
     RenderEngine::RenderEngine()
         : m_videoStream(nullptr), m_audioStream(nullptr), m_audioFifo(nullptr), m_frameCount(0), m_audioSamplesCount(0), m_progress(0),
-          m_totalProjectFrames(0), m_lastReportedProgress(-1)
+          m_totalProjectFrames(0), m_lastReportedProgress(-1), m_enableAudioTransition(false)
     {
     }
 
@@ -431,6 +433,12 @@ namespace VideoCreator
     {
         int64_t startAudioSampleCount = m_audioSamplesCount;
         int totalFrames = static_cast<int>(std::round(transitionScene.duration * m_config.project.fps));
+
+        if (m_audioStream && m_enableAudioTransition) {
+            if (!renderAudioTransition(fromScene, toScene, transitionScene.duration)) {
+                return false;
+            }
+        }
         
         ImageDecoder fromDecoder, toDecoder;
         if (!fromDecoder.open(fromScene.resources.image.path) || !toDecoder.open(toScene.resources.image.path)) {
@@ -575,6 +583,164 @@ namespace VideoCreator
             m_frameCount++;
             updateAndReportProgress();
         }
+        return true;
+    }
+
+    bool RenderEngine::renderAudioTransition(const SceneConfig &fromScene, const SceneConfig &toScene, double duration_seconds)
+    {
+        if (!m_audioStream || !m_audioCodecContext || duration_seconds <= 0.0) return true;
+
+        const int sample_rate = m_audioCodecContext->sample_rate > 0 ? m_audioCodecContext->sample_rate : 44100;
+        int frame_size = m_audioCodecContext->frame_size;
+        if (frame_size <= 0) frame_size = 1024; // 合理的默认值
+
+        const int total_samples = static_cast<int>(std::ceil(duration_seconds * sample_rate));
+        const double vol_from = fromScene.resources.audio.volume <= 0 ? 0.0 : fromScene.resources.audio.volume;
+        const double vol_to = toScene.resources.audio.volume <= 0 ? 0.0 : toScene.resources.audio.volume;
+
+        AudioDecoder fromDecoder;
+        AudioDecoder toDecoder;
+        bool fromAvailable = !fromScene.resources.audio.path.empty() && fromDecoder.open(fromScene.resources.audio.path);
+        bool toAvailable = !toScene.resources.audio.path.empty() && toDecoder.open(toScene.resources.audio.path);
+
+        if (fromAvailable) {
+            if (!fromDecoder.applyVolumeEffect(fromScene)) {
+                qDebug() << "起始场景音量特效应用失败，继续使用原始音频。原因: " << fromDecoder.getErrorString().c_str();
+            }
+        }
+        if (toAvailable) {
+            if (!toDecoder.applyVolumeEffect(toScene)) {
+                qDebug() << "目标场景音量特效应用失败，继续使用原始音频。原因: " << toDecoder.getErrorString().c_str();
+            }
+        }
+
+        // 如果没有可用音频源，则保持旧逻辑由后续循环填充静音
+        if (!fromAvailable && !toAvailable) {
+            return true;
+        }
+
+        if (fromAvailable) {
+            double fromDuration = fromDecoder.getDuration();
+            if (fromDuration <= 0) {
+                fromDuration = fromScene.duration;
+            }
+            double start_time = std::max(0.0, fromDuration - duration_seconds);
+            fromDecoder.seek(start_time);
+        }
+
+        struct AudioBuffer {
+            std::vector<float> channels[2];
+            size_t readPos = 0;
+            bool exhausted = false;
+        };
+
+        AudioBuffer fromBuf;
+        AudioBuffer toBuf;
+
+        auto compactBuffer = [](AudioBuffer &buf) {
+            const size_t threshold = 8192;
+            if (buf.readPos > threshold) {
+                for (auto &ch : buf.channels) {
+                    if (buf.readPos <= ch.size()) {
+                        ch.erase(ch.begin(), ch.begin() + static_cast<long long>(buf.readPos));
+                    } else {
+                        ch.clear();
+                    }
+                }
+                buf.readPos = 0;
+            }
+        };
+
+        auto ensureSamples = [this](AudioDecoder &decoder, AudioBuffer &buf, int needed, bool &available) -> bool {
+            while (!buf.exhausted && static_cast<int>(buf.channels[0].size() - buf.readPos) < needed) {
+                FFmpegUtils::AvFramePtr frame;
+                int ret = decoder.decodeFrame(frame);
+                if (ret > 0 && frame) {
+                    const int nb = frame->nb_samples;
+                    int ch = frame->ch_layout.nb_channels > 0 ? frame->ch_layout.nb_channels : 1;
+                    ch = std::min(ch, 2); // 仅处理前两个声道
+                    for (int c = 0; c < ch; ++c) {
+                        float *data = reinterpret_cast<float *>(frame->data[c]);
+                        buf.channels[c].insert(buf.channels[c].end(), data, data + nb);
+                    }
+                    // 单声道时复制到右声道，保证双声道输出
+                    if (ch == 1) {
+                        buf.channels[1].insert(buf.channels[1].end(), buf.channels[0].end() - nb, buf.channels[0].end());
+                    }
+                    // 对齐两个声道长度
+                    const size_t max_len = std::max(buf.channels[0].size(), buf.channels[1].size());
+                    buf.channels[0].resize(max_len, 0.0f);
+                    buf.channels[1].resize(max_len, 0.0f);
+                }
+                else if (ret == 0) {
+                    buf.exhausted = true;
+                    break;
+                }
+                else {
+                    buf.exhausted = true;
+                    available = false;
+                    qDebug() << "音频转场解码失败，使用静音代替。";
+                    break;
+                }
+            }
+            return true;
+        };
+
+        int processed = 0;
+        while (processed < total_samples) {
+            int chunk = std::min(frame_size, total_samples - processed);
+
+            if (fromAvailable) {
+                if (!ensureSamples(fromDecoder, fromBuf, chunk, fromAvailable)) return false;
+            }
+            if (toAvailable) {
+                if (!ensureSamples(toDecoder, toBuf, chunk, toAvailable)) return false;
+            }
+
+            auto mixedFrame = FFmpegUtils::createAvFrame();
+            mixedFrame->nb_samples = chunk;
+            mixedFrame->ch_layout = m_audioCodecContext->ch_layout;
+            mixedFrame->format = m_audioCodecContext->sample_fmt;
+            mixedFrame->sample_rate = sample_rate;
+            int ret = av_frame_get_buffer(mixedFrame.get(), 0);
+            if (ret < 0) {
+                m_errorString = format_ffmpeg_error(ret, "为转场混音帧分配缓冲区失败");
+                return false;
+            }
+
+            const int channels = m_audioCodecContext->ch_layout.nb_channels > 0 ? m_audioCodecContext->ch_layout.nb_channels : 2;
+            for (int c = 0; c < channels; ++c) {
+                float *dst = reinterpret_cast<float *>(mixedFrame->data[c]);
+                for (int i = 0; i < chunk; ++i) {
+                    float s_from = 0.0f;
+                    float s_to = 0.0f;
+                    if (fromAvailable && fromBuf.readPos + i < fromBuf.channels[c % 2].size()) {
+                        s_from = fromBuf.channels[c % 2][fromBuf.readPos + i];
+                    }
+                    if (toAvailable && toBuf.readPos + i < toBuf.channels[c % 2].size()) {
+                        s_to = toBuf.channels[c % 2][toBuf.readPos + i];
+                    }
+                    double t = static_cast<double>(processed + i) / static_cast<double>(total_samples);
+                    double w_from = 1.0 - t;
+                    double w_to = t;
+                    dst[i] = static_cast<float>(s_from * w_from * vol_from + s_to * w_to * vol_to);
+                }
+            }
+
+            fromBuf.readPos += chunk;
+            toBuf.readPos += chunk;
+            compactBuffer(fromBuf);
+            compactBuffer(toBuf);
+
+            if (av_audio_fifo_write(m_audioFifo, (void **)mixedFrame->data, mixedFrame->nb_samples) < mixedFrame->nb_samples) {
+                m_errorString = "写入转场混音数据到FIFO失败";
+                return false;
+            }
+
+            if (!sendBufferedAudioFrames()) return false;
+            processed += chunk;
+        }
+
         return true;
     }
 
