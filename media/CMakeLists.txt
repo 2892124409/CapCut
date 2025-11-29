@@ -44,6 +44,8 @@ qt_add_qml_module(appmedia
     mediacontroller.cpp
     videoplayer_impl.h
     videoplayer_impl.cpp
+    audioplayer.h
+    audioplayer.cpp
 )
 
 # ==========================================

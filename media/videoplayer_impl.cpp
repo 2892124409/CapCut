@@ -159,8 +159,8 @@ void VideoPlayerImpl::seek(qint64 position)
     if (wasPlaying) {
         if (m_demuxer)
             m_demuxer->requestResume();
-        if (m_audioDecoder)
-            m_audioDecoder->requestResume();
+    if (m_audioDecoder)
+        m_audioDecoder->requestResume();
         if (m_videoDecoder)
             m_videoDecoder->requestResume();
         m_isPaused.store(false);

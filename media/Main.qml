@@ -140,9 +140,11 @@ Window {
     // 文件选择对话框
     FileDialog {
         id: fileDialog
-        title: "请选择视频文件"
+        title: "请选择媒体文件"
         nameFilters: [
+            "媒体文件 (*.mp4 *.avi *.mkv *.mov *.wmv *.flv *.webm *.m4v *.3gp *.ts *.mp3 *.wav *.flac *.aac *.ogg *.m4a *.wma *.opus *.aiff *.ape)",
             "视频文件 (*.mp4 *.avi *.mkv *.mov *.wmv *.flv *.webm *.m4v *.3gp *.ts)",
+            "音频文件 (*.mp3 *.wav *.flac *.aac *.ogg *.m4a *.wma *.opus *.aiff *.ape)",
             "所有文件 (*)"
         ]
         onAccepted: {

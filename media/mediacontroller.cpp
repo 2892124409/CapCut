@@ -1,5 +1,6 @@
 #include "mediacontroller.h"
 #include "videoplayer_impl.h"
+#include "audioplayer.h"
 #include <QDebug>
 #include <QQuickWindow>
 #include <QSGSimpleTextureNode>
@@ -156,12 +157,17 @@ IMediaPlayer* MediaController::createMediaPlayer(const QString &filePath)
     QFileInfo fileInfo(filePath);
     QString extension = fileInfo.suffix().toLower();
     
-    // 仅支持视频格式
     if (extension == "mp4" || extension == "avi" || extension == "mkv" || 
         extension == "mov" || extension == "wmv" || extension == "flv" ||
         extension == "webm" || extension == "m4v" || extension == "3gp" ||
         extension == "ts") {
         return new VideoPlayerImpl(this);
+    }
+    if (extension == "mp3" || extension == "wav" || extension == "flac" ||
+        extension == "aac" || extension == "ogg" || extension == "m4a" ||
+        extension == "wma" || extension == "opus" || extension == "aiff" ||
+        extension == "ape") {
+        return new AudioPlayer(this);
     }
     
     return nullptr;

@@ -4,7 +4,9 @@ namespace {
 const QStringList &videoExtensions() {
     static const QStringList exts = {
         "mp4", "avi", "mkv", "mov", "wmv",
-        "flv", "webm", "m4v", "3gp", "ts"
+        "flv", "webm", "m4v", "3gp", "ts",
+        "mp3", "wav", "flac", "aac", "ogg",
+        "m4a", "wma", "opus", "aiff", "ape"
     };
     return exts;
 }

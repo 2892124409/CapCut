@@ -30,6 +30,7 @@ public:
   void requestFlush();
   void requestStop();
   void setDropUntil(qint64 ms) { m_dropUntilMs.store(ms); }
+  void hardResetOutput();
 
   // 设置 Demuxer 引用
   void setDemuxer(Demuxer *demuxer) { m_demuxer = demuxer; }

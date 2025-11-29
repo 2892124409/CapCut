@@ -278,6 +278,11 @@ bool AudioDecoder::recreateAudioOutput() {
   return true;
 }
 
+void AudioDecoder::hardResetOutput() {
+  QMutexLocker locker(&m_mutex);
+  recreateAudioOutput();
+}
+
 qint64 AudioDecoder::bytesFree() const {
   QMutexLocker locker(&m_mutex);
   if (m_audioSink) {
