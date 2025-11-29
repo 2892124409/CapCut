@@ -1,0 +1,135 @@
+#ifndef MEDIACONTROLLER_H
+#define MEDIACONTROLLER_H
+
+#include "imediaplayer.h"
+#include <QObject>
+#include <QString>
+#include <QQuickItem>
+#include <QSGNode>
+#include <QSGSimpleTextureNode>
+#include <QSGTexture>
+#include <QReadWriteLock>
+#include <QElapsedTimer>
+#include <QTimer>
+#include <atomic>
+
+/**
+ * @brief 媒体控制器
+ * 
+ * 统一管理视频、音频、图片播放器，
+ * 提供统一的控制接口给QML使用
+ */
+class MediaController : public QQuickItem {
+    Q_OBJECT
+    QML_ELEMENT
+
+    // === 暴露给 QML 的属性 ===
+    Q_PROPERTY(qint64 duration READ duration NOTIFY durationChanged)
+    Q_PROPERTY(qint64 position READ position NOTIFY positionChanged)
+    Q_PROPERTY(bool playing READ isPlaying NOTIFY playingStateChanged)
+    Q_PROPERTY(bool paused READ isPaused NOTIFY pausedStateChanged)
+    Q_PROPERTY(bool stopped READ isStopped NOTIFY stoppedStateChanged)
+    Q_PROPERTY(QString mediaType READ mediaType NOTIFY mediaTypeChanged)
+    Q_PROPERTY(qreal zoomLevel READ zoomLevel NOTIFY zoomLevelChanged)
+    Q_PROPERTY(qreal rotationAngle READ rotationAngle NOTIFY rotationAngleChanged)
+    Q_PROPERTY(bool supportsZoom READ supportsZoom NOTIFY supportsZoomChanged)
+    Q_PROPERTY(bool supportsRotation READ supportsRotation NOTIFY supportsRotationChanged)
+
+public:
+    explicit MediaController(QQuickItem *parent = nullptr);
+    ~MediaController() override;
+
+    // OpenGL 渲染入口
+    QSGNode *updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *) override;
+
+    // === 供 QML 调用的统一接口 ===
+    Q_INVOKABLE bool loadMedia(const QString &filePath);
+    Q_INVOKABLE void play();
+    Q_INVOKABLE void pause();
+    Q_INVOKABLE void stop();
+    Q_INVOKABLE void seek(qint64 position);
+    Q_INVOKABLE void setVolume(float volume);
+
+    // 图片操作接口
+    Q_INVOKABLE void zoomIn();
+    Q_INVOKABLE void zoomOut();
+    Q_INVOKABLE void resetZoom();
+    Q_INVOKABLE void rotateLeft();
+    Q_INVOKABLE void rotateRight();
+
+    // 属性读取器
+    qint64 duration() const;
+    qint64 position() const;
+    bool isPlaying() const;
+    bool isPaused() const;
+    bool isStopped() const;
+    QString mediaType() const;
+    qreal zoomLevel() const;
+    qreal rotationAngle() const;
+    bool supportsZoom() const;
+    bool supportsRotation() const;
+
+signals:
+    void durationChanged();
+    void positionChanged();
+    void playingStateChanged();
+    void pausedStateChanged();
+    void stoppedStateChanged();
+    void mediaTypeChanged();
+    void zoomLevelChanged();
+    void rotationAngleChanged();
+    void supportsZoomChanged();
+    void supportsRotationChanged();
+    void errorOccurred(const QString &error);
+
+private slots:
+    void onFrameChanged(const QImage &frame);
+    void onDurationChanged(qint64 duration);
+    void onPositionChanged(qint64 position);
+    void onPlayingStateChanged(bool playing);
+    void onPausedStateChanged(bool paused);
+    void onStoppedStateChanged(bool stopped);
+    void onZoomLevelChanged(qreal zoom);
+    void onRotationAngleChanged(qreal angle);
+    void onMediaEnded();
+    void onErrorOccurred(const QString &error);
+
+private:
+    // 创建特定类型的媒体播放器
+    IMediaPlayer* createMediaPlayer(const QString &filePath);
+    
+    // 清理当前播放器
+    void cleanupCurrentPlayer();
+    
+    // 更新纹理
+    void updateTexture(const QImage &image);
+    
+    // 渲染图像
+    void renderImage(QSGSimpleTextureNode *node, const QRectF &rect);
+
+    // 当前媒体播放器
+    IMediaPlayer* m_currentPlayer = nullptr;
+    
+    // 渲染相关
+    QImage m_currentFrame;
+    QReadWriteLock m_frameLock;
+    QSGTexture *m_cachedTexture = nullptr;
+    QSize m_cachedTextureSize;
+    
+    // 定时器
+    QTimer *m_renderTimer = nullptr;
+    
+    // 状态缓存
+    std::atomic<qint64> m_cachedDuration{0};
+    std::atomic<qint64> m_cachedPosition{0};
+    std::atomic<bool> m_cachedPlaying{false};
+    std::atomic<bool> m_cachedPaused{false};
+    std::atomic<bool> m_cachedStopped{true};
+    QString m_cachedMediaType;
+    qreal m_cachedZoomLevel = 1.0;
+    qreal m_cachedRotationAngle = 0.0;
+    bool m_cachedSupportsZoom = false;
+    bool m_cachedSupportsRotation = false;
+};
+
+#endif // MEDIACONTROLLER_H

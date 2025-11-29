@@ -27,8 +27,7 @@ qt_add_qml_module(appmedia
     QML_FILES
     Main.qml
     SOURCES
-    videoplayer.h
-    videoplayer.cpp
+    # 原有文件
     audiodecoder.h
     audiodecoder.cpp
     videodecoder.h
@@ -40,6 +39,17 @@ qt_add_qml_module(appmedia
     filemanager.cpp
     imagedecoder.h
     imagedecoder.cpp
+    
+    # 重构新增文件
+    imediaplayer.h
+    mediacontroller.h
+    mediacontroller.cpp
+    videoplayer_impl.h
+    videoplayer_impl.cpp
+    imageviewer.h
+    imageviewer.cpp
+    audioplayer.h
+    audioplayer.cpp
 )
 
 # ==========================================

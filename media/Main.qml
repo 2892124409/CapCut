@@ -34,21 +34,21 @@ Window {
         Keys.onPressed: (event) => {
             switch(event.key) {
                 case Qt.Key_Space:
-                    if (myPlayer.paused) myPlayer.resume()
-                    else myPlayer.pause()
+                    if (mediaController.paused) mediaController.pause()
+                    else mediaController.play()
                     event.accepted = true
                     break
                 case Qt.Key_Left:
-                    if (myPlayer.duration > 0) {
-                        var seekBack = Math.max(0, myPlayer.position - 5000) // 后退5秒
-                        myPlayer.seek(seekBack)
+                    if (mediaController.duration > 0) {
+                        var seekBack = Math.max(0, mediaController.position - 5000) // 后退5秒
+                        mediaController.seek(seekBack)
                     }
                     event.accepted = true
                     break
                 case Qt.Key_Right:
-                    if (myPlayer.duration > 0) {
-                        var seekForward = Math.min(myPlayer.duration, myPlayer.position + 5000) // 前进5秒
-                        myPlayer.seek(seekForward)
+                    if (mediaController.duration > 0) {
+                        var seekForward = Math.min(mediaController.duration, mediaController.position + 5000) // 前进5秒
+                        mediaController.seek(seekForward)
                     }
                     event.accepted = true
                     break
@@ -93,8 +93,8 @@ Window {
         color: "black"
 
         // === 1. 播放器核心组件 ===
-        VideoPlayer {
-            id: myPlayer
+        MediaController {
+            id: mediaController
             anchors.fill: parent
         }
     }
@@ -166,14 +166,8 @@ Window {
             // 扫描文件夹并设置当前文件
             fileManager.scanFolderForMedia(filePath)
             
-            // 根据文件类型调用不同的加载方法
-            if (fileManager.currentFileType === "video") {
-                myPlayer.play(filePath)
-            } else if (fileManager.currentFileType === "image") {
-                myPlayer.loadImage(filePath)
-            } else if (fileManager.currentFileType === "audio") {
-                myPlayer.play(filePath)
-            }
+            // 使用统一的加载方法
+            mediaController.loadMedia(filePath)
         }
     }
 
@@ -183,7 +177,7 @@ Window {
 
 
 
-        height: myPlayer.currentMediaType === "image" ? 60 : 90
+        height: mediaController.mediaType === "image" ? 60 : 90
         color: "#1a1a1a"
         anchors.bottom: parent.bottom
         anchors.left: parent.left
@@ -209,7 +203,7 @@ Window {
                 height: 30
 
                 // 【修改点 2】如果是图片模式，直接隐藏进度条
-                visible: myPlayer.currentMediaType !== "image"
+                visible: mediaController.mediaType !== "image"
 
                 // 进度条背景
                 Rectangle {
@@ -231,7 +225,7 @@ Window {
                             top: parent.top
                             bottom: parent.bottom
                         }
-                        width: myPlayer.duration > 0 ? (myPlayer.position / myPlayer.duration) * parent.width : 0
+                        width: mediaController.duration > 0 ? (mediaController.position / mediaController.duration) * parent.width : 0
                         radius: 3
                         color: "#00CCFF"
                     }
@@ -244,7 +238,7 @@ Window {
                             top: parent.top
                             bottom: parent.bottom
                         }
-                        width: myPlayer.duration > 0 ? Math.min((myPlayer.position + 5000) / myPlayer.duration, 1) * parent.width : 0
+                        width: mediaController.duration > 0 ? Math.min((mediaController.position + 5000) / mediaController.duration, 1) * parent.width : 0
                         radius: 3
                         color: "#666"
                         opacity: 0.6
@@ -254,7 +248,7 @@ Window {
                     // 滑块
                     Rectangle {
                         id: progressHandle
-                        x: myPlayer.duration > 0 ? (myPlayer.position / myPlayer.duration) * progressBackground.width - width/2 : 0
+                        x: mediaController.duration > 0 ? (mediaController.position / mediaController.duration) * progressBackground.width - width/2 : 0
                         y: progressBackground.height / 2 - height / 2
                         width: progressHandleArea.containsMouse || progressHandleArea.pressed ? 16 : 12
                         height: progressHandleArea.containsMouse || progressHandleArea.pressed ? 16 : 12
@@ -281,18 +275,18 @@ Window {
 
                         // 只在拖动滑块时暂停播放
                         onPressed: (mouse) => {
-                            wasPlayingBeforeDrag = !myPlayer.paused
-                            myPlayer.pause()
+                            wasPlayingBeforeDrag = !mediaController.paused
+                            mediaController.pause()
                         }
 
                         onReleased: {
-                            if (myPlayer.duration > 0) {
+                            if (mediaController.duration > 0) {
                                 var normalizedPos = Math.max(0, Math.min(1, progressHandle.x / progressBackground.width))
-                                var seekPos = normalizedPos * myPlayer.duration
-                                myPlayer.seek(seekPos)
+                                var seekPos = normalizedPos * mediaController.duration
+                                mediaController.seek(seekPos)
                                 
                                 if (wasPlayingBeforeDrag) {
-                                    myPlayer.resume()
+                                    mediaController.play()
                                 }
                             }
                         }
@@ -309,7 +303,7 @@ Window {
                     }
                     color: "white"
                     font.pixelSize: 12
-                    text: formatTime(myPlayer.position)
+                    text: formatTime(mediaController.position)
 
                     function formatTime(ms) {
                         var seconds = Math.floor(ms / 1000)
@@ -340,7 +334,7 @@ Window {
                     }
                     color: "white"
                     font.pixelSize: 12
-                    text: formatTime(myPlayer.duration)
+                    text: formatTime(mediaController.duration)
 
                     function formatTime(ms) {
                         var seconds = Math.floor(ms / 1000)
@@ -424,12 +418,8 @@ Window {
 onClicked: {
     var prevFile = fileManager.getPreviousFile()
     if (prevFile) {
-        // 【修改点】根据文件类型判断调用哪个接口
-        if (fileManager.currentFileType === "image") {
-            myPlayer.loadImage(prevFile)
-        } else {
-            myPlayer.play(prevFile) // 视频或音频
-        }
+        // 使用统一的加载方法
+        mediaController.loadMedia(prevFile)
     }
 }
                     }
@@ -439,14 +429,14 @@ onClicked: {
                         id: playPauseButton
                         anchors.centerIn: parent
                         width: 140; height: 40
-                        text: myPlayer.paused ? "▶ 播 放" : "⏸ 暂 停"
+                        text: mediaController.paused ? "▶ 播 放" : "⏸ 暂 停"
                         font.bold: true; font.pixelSize: 16
                         background: Rectangle { color: parent.down ? "#333" : "#444"; radius: 8; border.color: "#555" }
                         contentItem: Text { text: parent.text; font: parent.font; color: "white"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                         focusPolicy: Qt.NoFocus // 防止按钮窃取焦点
                         onClicked: {
-                            if (myPlayer.paused) myPlayer.resume();
-                            else myPlayer.pause();
+                            if (mediaController.paused) mediaController.play();
+                            else mediaController.pause();
                         }
                     }
 
@@ -478,12 +468,8 @@ onClicked: {
 onClicked: {
     var nextFile = fileManager.getNextFile()
     if (nextFile) {
-        // 【修改点】同样增加类型判断
-        if (fileManager.currentFileType === "image") {
-            myPlayer.loadImage(nextFile)
-        } else {
-            myPlayer.play(nextFile)
-        }
+        // 使用统一的加载方法
+        mediaController.loadMedia(nextFile)
     }
 }
                     }
@@ -513,7 +499,7 @@ onClicked: {
 
                         // === 核心：调用 C++ setVolume ===
                         onValueChanged: {
-                            myPlayer.setVolume(value)
+                            mediaController.setVolume(value)
                         }
 
                         // 音量条样式 (简易版)

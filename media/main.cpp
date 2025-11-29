@@ -3,7 +3,7 @@
 #include <QDebug>
 #include <QtQml/qqml.h>
 #include "filemanager.h"
-#include "videoplayer.h"
+#include "mediacontroller.h"
 
 // ==========================================
 // 引入 FFmpeg 头文件
@@ -61,8 +61,9 @@ int main(int argc, char *argv[])
     // 注册FileManager类型到QML
     qmlRegisterType<FileManager>("media", 1, 0, "FileManager");
     
-    // 注册VideoPlayer类型到QML
-    qmlRegisterType<VideoPlayer>("media", 1, 0, "VideoPlayer");
+    
+    // 注册MediaController类型到QML
+    qmlRegisterType<MediaController>("media", 1, 0, "MediaController");
 
     QQmlApplicationEngine engine;
     const QUrl url("qrc:/qt/qml/media/Main.qml");
