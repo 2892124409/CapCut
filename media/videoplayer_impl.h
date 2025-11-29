@@ -48,10 +48,10 @@ public:
     void resetTransform() override;
 
 private slots:
-    void onDemuxerOpened(qint64 duration, int videoStreamIndex, int audioStreamIndex);
-    void onDemuxerEndOfFile();
-    void onTimerFire();
-
+      void onDemuxerOpened(qint64 duration, int videoStreamIndex, int audioStreamIndex);
+      void onDemuxerEndOfFile();
+      void onDemuxerFailedToOpen(const QString &error); // NEW: Slot for demuxer open failure
+      void onTimerFire();
 private:
     // 私有方法
     void updateTransformMatrix();

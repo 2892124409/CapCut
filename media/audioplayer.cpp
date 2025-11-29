@@ -22,13 +22,10 @@ bool AudioPlayer::load(const QString &filePath)
     m_demuxer = new Demuxer(this);
     connect(m_demuxer, &Demuxer::opened, this, &AudioPlayer::onDemuxerOpened);
     connect(m_demuxer, &Demuxer::endOfFile, this, &AudioPlayer::onDemuxerEndOfFile);
+    connect(m_demuxer, &Demuxer::failedToOpen, this, &AudioPlayer::onDemuxerFailedToOpen); // NEW: Connect failedToOpen
 
-    if (!m_demuxer->open(filePath)) {
-        qDebug() << "AudioPlayer: 打开文件失败";
-        delete m_demuxer;
-        m_demuxer = nullptr;
-        return false;
-    }
+    m_demuxer->setFilePath(filePath);
+    m_demuxer->start(); // Start the demuxer thread, which will perform the actual open
 
     m_isStopped.store(false);
     emit stoppedStateChanged(false);
@@ -217,6 +214,15 @@ void AudioPlayer::onTimerFire()
         m_currentPosition = elapsed;
         emit positionChanged(elapsed);
     }
+}
+
+void AudioPlayer::onDemuxerFailedToOpen(const QString &error)
+{
+    qDebug() << "AudioPlayer: 文件打开失败:" << error;
+    // 清理所有资源并更新状态
+    cleanup();
+    // 可以在这里发出一个更高级别的错误信号通知 UI
+    // emit errorOccurred(error);
 }
 
 void AudioPlayer::cleanup()

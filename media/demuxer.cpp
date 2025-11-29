@@ -15,8 +15,12 @@ Demuxer::~Demuxer() {
   clearQueues();
 }
 
-bool Demuxer::open(const QString &filePath) {
-  QString path = filePath;
+void Demuxer::setFilePath(const QString &filePath) {
+  m_filePath = filePath;
+}
+
+bool Demuxer::_performOpenBlocking() {
+  QString path = m_filePath;
   if (path.startsWith("file:///"))
     path.remove("file:///");
 
@@ -24,7 +28,7 @@ bool Demuxer::open(const QString &filePath) {
   if (avformat_open_input(&m_formatCtx, path.toStdString().c_str(), nullptr,
                           nullptr) != 0) {
     qDebug() << "Demuxer: 无法打开文件" << path;
-    emit errorOccurred("无法打开文件");
+    emit failedToOpen("无法打开文件");
     return false;
   }
 
@@ -33,7 +37,9 @@ bool Demuxer::open(const QString &filePath) {
 
   if (avformat_find_stream_info(m_formatCtx, nullptr) < 0) {
     qDebug() << "Demuxer: 无法获取流信息";
-    emit errorOccurred("无法获取流信息");
+    emit failedToOpen("无法获取流信息");
+    avformat_close_input(&m_formatCtx);
+    m_formatCtx = nullptr;
     return false;
   }
 
@@ -63,6 +69,20 @@ bool Demuxer::open(const QString &filePath) {
 
 void Demuxer::run() {
   qDebug() << "Demuxer: 线程启动";
+
+  if (!m_filePath.isEmpty()) { // 仅当设置了文件路径时尝试打开
+      if (!_performOpenBlocking()) {
+          qDebug() << "Demuxer: 文件打开失败，线程退出。";
+          // failedToOpen 信号已在 _performOpenBlocking 中发出
+          // 在这里发出 endOfFile 信号，以便清理或通知播放器
+          emit endOfFile();
+          return; // 打开失败，退出线程
+      }
+  } else {
+      qDebug() << "Demuxer: 没有设置文件路径，线程退出。";
+      emit failedToOpen("没有设置文件路径");
+      return; // 没有文件路径，退出线程
+  }
 
   while (!m_stopRequested.load()) {
     // 处理 seek 请求

@@ -23,13 +23,10 @@ bool VideoPlayerImpl::load(const QString &filePath)
     m_demuxer = new Demuxer(this);
     connect(m_demuxer, &Demuxer::opened, this, &VideoPlayerImpl::onDemuxerOpened);
     connect(m_demuxer, &Demuxer::endOfFile, this, &VideoPlayerImpl::onDemuxerEndOfFile);
+    connect(m_demuxer, &Demuxer::failedToOpen, this, &VideoPlayerImpl::onDemuxerFailedToOpen); // NEW: Connect failedToOpen
 
-    if (!m_demuxer->open(filePath)) {
-        qDebug() << "VideoPlayerImpl: 打开文件失败";
-        delete m_demuxer;
-        m_demuxer = nullptr;
-        return false;
-    }
+    m_demuxer->setFilePath(filePath);
+    m_demuxer->start(); // Start the demuxer thread, which will perform the actual open
 
     m_isStopped.store(false);
     emit stoppedStateChanged(false);
@@ -261,6 +258,15 @@ void VideoPlayerImpl::onTimerFire()
             emit frameChanged(frame.image);
         }
     }
+}
+
+void VideoPlayerImpl::onDemuxerFailedToOpen(const QString &error)
+{
+    qDebug() << "VideoPlayerImpl: 文件打开失败:" << error;
+    // 清理所有资源并更新状态
+    cleanup();
+    // 可以在这里发出一个更高级别的错误信号通知 UI
+    // emit errorOccurred(error);
 }
 
 void VideoPlayerImpl::updateTransformMatrix()

@@ -21,8 +21,7 @@ public:
   explicit Demuxer(QObject *parent = nullptr);
   ~Demuxer() override;
 
-  // 打开媒体文件
-  bool open(const QString &filePath);
+  void setFilePath(const QString &filePath);
 
   // 获取流信息
   int videoStreamIndex() const { return m_videoStreamIndex; }
@@ -47,7 +46,7 @@ public:
 signals:
   void opened(qint64 duration, int videoStreamIndex, int audioStreamIndex);
   void endOfFile();
-  void errorOccurred(const QString &error);
+  void failedToOpen(const QString &error);
 
 protected:
   void run() override;
@@ -58,6 +57,7 @@ private:
   int m_videoStreamIndex = -1;
   int m_audioStreamIndex = -1;
   qint64 m_duration = 0;
+  QString m_filePath; // NEW: Member to store the file path
 
   // 数据包队列
   QQueue<AVPacket *> m_audioQueue;
@@ -82,6 +82,9 @@ private:
   void clearQueues();
   void pushAudioPacket(AVPacket *packet);
   void pushVideoPacket(AVPacket *packet);
+  
+  // NEW: Private method to perform the actual blocking open operation
+  bool _performOpenBlocking();
 };
 
 #endif // DEMUXER_H
