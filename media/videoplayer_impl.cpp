@@ -131,6 +131,8 @@ void VideoPlayerImpl::seek(qint64 position)
 
     if (m_audioDecoder)
         m_audioDecoder->requestFlush();
+    if (m_videoDecoder)
+        m_videoDecoder->setDropUntil(position);
     if (m_videoDecoder) {
         m_videoDecoder->requestFlush();
         m_videoDecoder->clearFrameQueue();
@@ -267,6 +269,8 @@ void VideoPlayerImpl::onDemuxerOpened(qint64 duration, int videoStreamIndex, int
         m_seekTimer.restart();
         m_audioClockMs.store(-1);
         m_audioClockTimer.invalidate();
+        if (m_videoDecoder)
+            m_videoDecoder->setDropUntil(target);
         if (m_audioDecoder)
             m_audioDecoder->setDropUntil(target);
         emit positionChanged(target);

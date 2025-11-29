@@ -176,6 +176,16 @@ bool VideoDecoder::processPacket(AVPacket *packet) {
         pts = packet->pts * av_q2d(time_base) * 1000.0;
       }
 
+      // 丢弃早于目标的帧，避免 seek 后显示旧画面
+      constexpr qint64 kDropTol = 20;
+      qint64 dropUntil = m_dropUntilMs.load();
+      if (dropUntil >= 0 && pts + kDropTol < dropUntil) {
+        return false;
+      }
+      if (dropUntil >= 0 && pts >= dropUntil) {
+        m_dropUntilMs.store(-1);
+      }
+
       // 将帧放入队列
       {
         QMutexLocker frameLocker(&m_frameMutex);

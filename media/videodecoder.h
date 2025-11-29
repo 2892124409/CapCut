@@ -44,6 +44,7 @@ public:
   void requestStop();
   void requestPause();
   void requestResume();
+  void setDropUntil(qint64 ms) { m_dropUntilMs.store(ms); }
 
   // 清理资源
   void cleanup();
@@ -82,6 +83,7 @@ private:
   std::atomic<bool> m_stopRequested{false};
   std::atomic<bool> m_pauseRequested{false};
   std::atomic<bool> m_flushRequested{false};
+  std::atomic<qint64> m_dropUntilMs{-1};
 
   // 同步控制
   QMutex m_mutex;

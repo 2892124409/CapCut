@@ -167,6 +167,16 @@ void AudioDecoder::processPacket(AVPacket *packet) {
 
   QMutexLocker locker(&m_mutex);
 
+  // 快速丢弃明显早于目标位置的包，避免解码旧音频
+  qint64 dropUntil = m_dropUntilMs.load();
+  if (dropUntil >= 0 && packet && packet->pts != AV_NOPTS_VALUE) {
+    qint64 pktMs = av_rescale_q(packet->pts, m_timeBase, AVRational{1, 1000});
+    if (pktMs + 10 < dropUntil) {
+      av_packet_unref(packet);
+      return;
+    }
+  }
+
   if (avcodec_send_packet(m_codecCtx.get(), packet) == 0) {
     while (avcodec_receive_frame(m_codecCtx.get(), m_frame.get()) == 0) {
       int dst_rate = m_outputFormat.sampleRate();
@@ -207,8 +217,8 @@ void AudioDecoder::processPacket(AVPacket *packet) {
       } else if (packet && packet->pts != AV_NOPTS_VALUE) {
         ptsMs = av_rescale_q(packet->pts, m_timeBase, AVRational{1, 1000});
       }
-      constexpr qint64 kDropTolerance = 30;
-      qint64 dropUntil = m_dropUntilMs.load();
+      constexpr qint64 kDropTolerance = 0;
+      dropUntil = m_dropUntilMs.load();
       bool dropping = dropUntil >= 0 && ptsMs + kDropTolerance < dropUntil;
 
       if (frame_count > 0 && m_audioDevice && !dropping) {
