@@ -1,5 +1,6 @@
 # This file is used to ignore files which are generated
 # ----------------------------------------------------------------------------
+*.bck
 *.mp4
 *.mp3
 *.png
@@ -86,3 +87,4 @@ CMakeLists.txt.user*
 
 # Third-party libraries
 /3rdparty/
+media/videoplayer_impl.cpp.bak
