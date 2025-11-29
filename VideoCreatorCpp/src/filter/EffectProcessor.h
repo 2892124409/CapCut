@@ -50,7 +50,6 @@ namespace VideoCreator
 
         // Frame cache for transitions
         std::vector<FFmpegUtils::AvFramePtr> m_transition_frames;
-        bool m_transition_initialized = false;
 
         // Private methods
         bool initFilterGraph(const std::string &filterDescription);

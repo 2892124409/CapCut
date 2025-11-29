@@ -52,6 +52,20 @@ namespace VideoCreator
         std::stringstream ss;
         ss.imbue(std::locale("C"));
 
+        // 统一色彩空间/范围元数据，避免滤镜链输出的帧缺少或使用默认值导致色偏
+        AVColorSpace cs = (m_height >= 720) ? AVCOL_SPC_BT709 : AVCOL_SPC_SMPTE170M;
+        AVColorPrimaries cp = (m_height >= 720) ? AVCOL_PRI_BT709 : AVCOL_PRI_SMPTE170M;
+        AVColorTransferCharacteristic ctrc = (m_height >= 720) ? AVCOL_TRC_BT709 : AVCOL_TRC_SMPTE170M;
+        AVRational sar{1,1};
+        auto stamp_color_info = [cs, cp, ctrc, sar](AVFrame* f) {
+            if (!f) return;
+            f->color_range = AVCOL_RANGE_MPEG;
+            f->colorspace = cs;
+            f->color_primaries = cp;
+            f->color_trc = ctrc;
+            f->sample_aspect_ratio = sar;
+        };
+
         if (params.preset == "zoom_in" || params.preset == "zoom_out")
         {
             double start_z = (params.preset == "zoom_in") ? 1.0 : 1.2;
@@ -129,6 +143,7 @@ namespace VideoCreator
                 m_errorString = "Error while receiving a frame from the filtergraph: " + std::string(errbuf);
                 return false;
             }
+            stamp_color_info(filteredFrame.get());
             m_kb_frames.push_back(std::move(filteredFrame));
         }
 
@@ -155,11 +170,8 @@ namespace VideoCreator
 
     FFmpegUtils::AvFramePtr EffectProcessor::applyCrossfade(const AVFrame* fromFrame, const AVFrame* toFrame, int frame_index, int duration_frames)
     {
-        if (!m_transition_initialized) {
-            if (!processTransition(fromFrame, toFrame, "fade", duration_frames)) {
-                return nullptr;
-            }
-            m_transition_initialized = true;
+        if (!processTransition(fromFrame, toFrame, "fade", duration_frames)) {
+            return nullptr;
         }
         if (frame_index < 0 || frame_index >= m_transition_frames.size()) {
             m_errorString = "Frame index out of bounds for cached transition frames.";
@@ -170,12 +182,9 @@ namespace VideoCreator
 
     FFmpegUtils::AvFramePtr EffectProcessor::applyWipe(const AVFrame* fromFrame, const AVFrame* toFrame, int frame_index, int duration_frames)
     {
-        if (!m_transition_initialized) {
-            // xfade supports different wipe patterns like wiperight, wipeleft, wipeup, wipedown
-            if (!processTransition(fromFrame, toFrame, "wipeleft", duration_frames)) {
-                return nullptr;
-            }
-            m_transition_initialized = true;
+        // xfade supports different wipe patterns like wiperight, wipeleft, wipeup, wipedown
+        if (!processTransition(fromFrame, toFrame, "wipeleft", duration_frames)) {
+            return nullptr;
         }
         if (frame_index < 0 || frame_index >= m_transition_frames.size()) {
             m_errorString = "Frame index out of bounds for cached transition frames.";
@@ -186,12 +195,9 @@ namespace VideoCreator
 
     FFmpegUtils::AvFramePtr EffectProcessor::applySlide(const AVFrame* fromFrame, const AVFrame* toFrame, int frame_index, int duration_frames)
     {
-        if (!m_transition_initialized) {
-            // xfade supports various slide patterns
-            if (!processTransition(fromFrame, toFrame, "slideleft", duration_frames)) {
-                return nullptr;
-            }
-            m_transition_initialized = true;
+        // xfade supports various slide patterns
+        if (!processTransition(fromFrame, toFrame, "slideleft", duration_frames)) {
+            return nullptr;
         }
         if (frame_index < 0 || frame_index >= m_transition_frames.size()) {
             m_errorString = "Frame index out of bounds for cached transition frames.";
@@ -213,12 +219,14 @@ namespace VideoCreator
         std::stringstream ss;
         ss.imbue(std::locale("C"));
         ss << std::fixed << std::setprecision(5);
+        bool use_bt709 = m_height >= 720;
         
         // Create a filtergraph that pads each single-frame input into a full-duration stream, then xfades them.
         ss << "[in0]tpad=stop_mode=clone:stop_duration=" << transition_duration_sec << "[s0];"
            << "[in1]tpad=stop_mode=clone:stop_duration=" << transition_duration_sec << "[s1];"
            << "[s0][s1]xfade=transition=" << transitionName
-           << ":duration=" << transition_duration_sec << ":offset=0[out]";
+           << ":duration=" << transition_duration_sec << ":offset=0"
+           << ",format=pix_fmts=yuv420p[out]";
 
         if (!initTransitionFilterGraph(ss.str())) {
             return false;
@@ -232,6 +240,23 @@ namespace VideoCreator
             av_frame_free(&to_clone);
             return false;
         }
+        // Stamp consistent color metadata before feeding into the filter graph
+        AVColorSpace cs = use_bt709 ? AVCOL_SPC_BT709 : AVCOL_SPC_SMPTE170M;
+        AVColorPrimaries cp = use_bt709 ? AVCOL_PRI_BT709 : AVCOL_PRI_SMPTE170M;
+        AVColorTransferCharacteristic ctrc = use_bt709 ? AVCOL_TRC_BT709 : AVCOL_TRC_SMPTE170M;
+        AVRational sar{1,1};
+
+        auto stamp_frame = [&](AVFrame* f){
+            if (!f) return;
+            f->color_range = AVCOL_RANGE_MPEG;
+            f->colorspace = cs;
+            f->color_primaries = cp;
+            f->color_trc = ctrc;
+            f->sample_aspect_ratio = sar;
+        };
+
+        stamp_frame(from_clone);
+        stamp_frame(to_clone);
         
         from_clone->pts = 0;
         if (av_buffersrc_add_frame_flags(m_buffersrcContext, from_clone, AV_BUFFERSRC_FLAG_KEEP_REF) < 0) {
@@ -262,6 +287,7 @@ namespace VideoCreator
                 m_errorString = "Error receiving frame from transition filtergraph: " + std::string(errbuf);
                 return false;
             }
+            stamp_frame(filteredFrame.get());
             m_transition_frames.push_back(std::move(filteredFrame));
         }
         
@@ -289,7 +315,6 @@ namespace VideoCreator
         m_buffersinkContext = nullptr;
         m_kb_frames.clear();
         m_transition_frames.clear();
-        m_transition_initialized = false;
     }
 
     bool EffectProcessor::initFilterGraph(const std::string &filterDescription)
@@ -323,6 +348,8 @@ namespace VideoCreator
         colorspace = (m_height >= 720) ? AVCOL_SPC_BT709 : AVCOL_SPC_SMPTE170M;
         av_opt_set_int(m_buffersrcContext, "color_range", AVCOL_RANGE_MPEG, 0);
         av_opt_set_int(m_buffersrcContext, "colorspace", colorspace, 0);
+        av_opt_set_int(m_buffersrcContext, "color_primaries", (m_height >= 720) ? AVCOL_PRI_BT709 : AVCOL_PRI_SMPTE170M, 0);
+        av_opt_set_int(m_buffersrcContext, "color_trc", (m_height >= 720) ? AVCOL_TRC_BT709 : AVCOL_TRC_SMPTE170M, 0);
         if (avfilter_graph_create_filter(&m_buffersinkContext, buffersink, "out", nullptr, nullptr, m_filterGraph) < 0) {
             m_errorString = "无法创建buffer sink滤镜";
             goto end;
@@ -390,8 +417,12 @@ namespace VideoCreator
         colorspace = (m_height >= 720) ? AVCOL_SPC_BT709 : AVCOL_SPC_SMPTE170M;
         av_opt_set_int(m_buffersrcContext, "color_range", AVCOL_RANGE_MPEG, 0);
         av_opt_set_int(m_buffersrcContext, "colorspace", colorspace, 0);
+        av_opt_set_int(m_buffersrcContext, "color_primaries", (m_height >= 720) ? AVCOL_PRI_BT709 : AVCOL_PRI_SMPTE170M, 0);
+        av_opt_set_int(m_buffersrcContext, "color_trc", (m_height >= 720) ? AVCOL_TRC_BT709 : AVCOL_TRC_SMPTE170M, 0);
         av_opt_set_int(m_buffersrcContext2, "color_range", AVCOL_RANGE_MPEG, 0);
         av_opt_set_int(m_buffersrcContext2, "colorspace", colorspace, 0);
+        av_opt_set_int(m_buffersrcContext2, "color_primaries", (m_height >= 720) ? AVCOL_PRI_BT709 : AVCOL_PRI_SMPTE170M, 0);
+        av_opt_set_int(m_buffersrcContext2, "color_trc", (m_height >= 720) ? AVCOL_TRC_BT709 : AVCOL_TRC_SMPTE170M, 0);
         if (avfilter_graph_create_filter(&m_buffersinkContext, buffersink, "out", nullptr, nullptr, m_filterGraph) < 0) {
             m_errorString = "Cannot create buffer sink.";
             goto end;

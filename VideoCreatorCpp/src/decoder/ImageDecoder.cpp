@@ -245,6 +245,9 @@ namespace VideoCreator
         // 在输出帧上设置正确的色彩信息
         scaledFrame->colorspace = static_cast<AVColorSpace>(colorspace);
         scaledFrame->color_range = AVCOL_RANGE_MPEG;
+        scaledFrame->color_primaries = (frame->height >= 720) ? AVCOL_PRI_BT709 : AVCOL_PRI_SMPTE170M;
+        scaledFrame->color_trc = (frame->height >= 720) ? AVCOL_TRC_BT709 : AVCOL_TRC_SMPTE170M;
+        scaledFrame->sample_aspect_ratio = AVRational{1, 1};
     
         return scaledFrame;
     }    

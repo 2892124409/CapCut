@@ -468,10 +468,18 @@ namespace VideoCreator
                 return false;
             }
 
+            // 3. Scale to target size/format with proper color metadata before feeding Ken Burns
+            auto scaledFromFrame = fromDecoder.scaleToSize(originalFromFrame, m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P);
+            if (!scaledFromFrame) {
+                m_errorString = "缩放 'from' 场景图片失败，原因: " + fromDecoder.getErrorString();
+                return false;
+            }
+            scaledFromFrame->pts = 0;
+
             // 3. Process the Ken Burns effect to get the last frame
             EffectProcessor fromSceneProcessor;
             fromSceneProcessor.initialize(m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P, m_config.project.fps);
-            if (fromSceneProcessor.processKenBurnsEffect(fromScene.effects.ken_burns, originalFromFrame.get(), totalFramesInFromScene)) {
+            if (fromSceneProcessor.processKenBurnsEffect(fromScene.effects.ken_burns, scaledFromFrame.get(), totalFramesInFromScene)) {
                 const AVFrame* lastKbFrame = fromSceneProcessor.getKenBurnsFrame(totalFramesInFromScene - 1);
                 if (lastKbFrame) {
                     finalFromFrame = FFmpegUtils::copyAvFrame(lastKbFrame);
