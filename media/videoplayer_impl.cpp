@@ -16,12 +16,23 @@ VideoPlayerImpl::~VideoPlayerImpl()
 
 bool VideoPlayerImpl::load(const QString &filePath)
 {
-    cleanup();
+    bool keepStartPaused = m_startPausedOnOpen;
+    qint64 keepReloadTarget = m_reloadTarget.load();
+    bool keepReloadPending = m_reloadPending.load();
+    qint64 keepPendingSeek = m_pendingSeek.load();
+    bool suppressResetSignals = keepReloadPending;
+    cleanup(!suppressResetSignals);
+    m_startPausedOnOpen = keepStartPaused;
+    m_reloadTarget.store(keepReloadPending ? keepReloadTarget : -1);
+    m_reloadPending.store(keepReloadPending);
+    m_pendingSeek.store(keepReloadPending ? keepPendingSeek : -1);
 
     // 创建并启动 Demuxer
     m_audioClockTimer.invalidate();
     m_reachedEof = false;
     m_lastFramePts = 0;
+    m_pendingSeek.store(-1);
+    m_currentFilePath = filePath;
     m_demuxer = new Demuxer(this);
     connect(m_demuxer, &Demuxer::opened, this, &VideoPlayerImpl::onDemuxerOpened);
     connect(m_demuxer, &Demuxer::endOfFile, this, &VideoPlayerImpl::onDemuxerEndOfFile);
@@ -84,8 +95,16 @@ void VideoPlayerImpl::stop()
 
 void VideoPlayerImpl::seek(qint64 position)
 {
-    if (!m_demuxer)
+    if (!m_demuxer || !m_demuxer->isRunning() || m_reachedEof) {
+        if (m_currentFilePath.isEmpty())
+            return;
+        m_pendingSeek.store(position);
+        m_reloadPending.store(true);
+        m_reloadTarget.store(position);
+        m_startPausedOnOpen = true; // 用户拖动后由他决定何时播放
+        load(m_currentFilePath);
         return;
+    }
 
     // 请求所有组件进行 seek
     m_demuxer->requestSeek(position);
@@ -101,6 +120,9 @@ void VideoPlayerImpl::seek(qint64 position)
     m_hasPendingFrame = false;
     m_currentPosition = position;
     m_audioClockTimer.invalidate();
+    m_reachedEof = false;
+    m_lastFramePts = 0;
+    m_reloadTarget.store(-1);
     emit positionChanged(position);
 }
 
@@ -174,6 +196,25 @@ void VideoPlayerImpl::onDemuxerOpened(qint64 duration, int videoStreamIndex, int
         return;
     }
 
+    // 如果有挂起的 seek（例如尾部拖动后重启），先记录并立即请求
+    qint64 pending = m_pendingSeek.exchange(-1);
+    bool hadPending = m_reloadPending.exchange(false);
+    qint64 target = -1;
+    if (pending >= 0) {
+        target = pending;
+    } else {
+        qint64 cached = m_reloadTarget.exchange(-1);
+        if (hadPending && cached >= 0) {
+            target = cached;
+        }
+    }
+    if (target >= 0) {
+        m_demuxer->requestSeek(target);
+        m_currentPosition = target;
+        m_audioClockTimer.invalidate();
+        emit positionChanged(target);
+    }
+
     // 初始化并启动视频解码器
     m_videoDecoder = new VideoDecoder(this);
     if (m_videoDecoder->init(m_demuxer->formatContext(), videoStreamIndex)) {
@@ -205,11 +246,26 @@ void VideoPlayerImpl::onDemuxerOpened(qint64 duration, int videoStreamIndex, int
         }
     }
 
-    // 启动渲染定时器
-    m_isPaused = false;
-    emit pausedStateChanged(false);
-    emit playingStateChanged(true);
-    m_timer->start(16); // 约60fps
+    // 启动或保持暂停
+    if (m_startPausedOnOpen) {
+        m_isPaused = true;
+        m_isStopped = false;
+        m_timer->stop();
+        if (m_demuxer)
+            m_demuxer->requestPause();
+        if (m_audioDecoder)
+            m_audioDecoder->requestPause();
+        if (m_videoDecoder)
+            m_videoDecoder->requestPause();
+        emit pausedStateChanged(true);
+        emit playingStateChanged(false);
+    } else {
+        m_isPaused = false;
+        emit pausedStateChanged(false);
+        emit playingStateChanged(true);
+        m_timer->start(16); // 约60fps
+    }
+    m_startPausedOnOpen = false;
 }
 
 void VideoPlayerImpl::onDemuxerEndOfFile()
@@ -301,7 +357,7 @@ void VideoPlayerImpl::onDemuxerFailedToOpen(const QString &error)
     emit errorOccurred(error);
 }
 
-void VideoPlayerImpl::cleanup()
+void VideoPlayerImpl::cleanup(bool emitSignals)
 {
     m_timer->stop();
 
@@ -334,8 +390,13 @@ void VideoPlayerImpl::cleanup()
     
     m_videoStreamIndex = -1;
     m_audioStreamIndex = -1;
-    m_totalDuration = 0;
-    m_currentPosition = 0;
+    if (emitSignals) {
+        m_totalDuration = 0;
+        m_currentPosition = 0;
+        emit positionChanged(0);
+        emit durationChanged(0);
+        emit frameChanged(QImage());
+    }
     m_audioClockMs = 0;
     m_audioClockTimer.invalidate();
     m_isPaused = false;
@@ -343,11 +404,13 @@ void VideoPlayerImpl::cleanup()
     m_hasPendingFrame = false;
     m_reachedEof = false;
     m_lastFramePts = 0;
-
-    emit positionChanged(0);
-    emit durationChanged(0);
-    emit pausedStateChanged(false);
-    emit playingStateChanged(false);
-    emit stoppedStateChanged(true);
-    emit frameChanged(QImage());
+    m_startPausedOnOpen = false;
+    m_reloadPending.store(false);
+    m_reloadTarget.store(-1);
+    m_pendingSeek.store(-1);
+    if (emitSignals) {
+        emit pausedStateChanged(false);
+        emit playingStateChanged(false);
+        emit stoppedStateChanged(true);
+    }
 }

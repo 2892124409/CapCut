@@ -8,6 +8,7 @@
 #include <QReadWriteLock>
 #include <QTimer>
 #include <QElapsedTimer>
+#include <QString>
 #include <atomic>
 
 /**
@@ -43,7 +44,7 @@ private slots:
       void onDemuxerFailedToOpen(const QString &error); // NEW: Slot for demuxer open failure
       void onTimerFire();
 private:
-    void cleanup();
+    void cleanup(bool emitSignals = true);
 
     // Qt 核心组件
     QTimer *m_timer = nullptr;
@@ -61,6 +62,9 @@ private:
     std::atomic<bool> m_isPaused{false};
     std::atomic<bool> m_isStopped{true};
     bool m_reachedEof = false;
+    QString m_currentFilePath;
+    bool m_startPausedOnOpen = false;
+    std::atomic<qint64> m_reloadTarget{ -1 };
 
     // 流索引
     int m_videoStreamIndex = -1;
@@ -74,6 +78,8 @@ private:
     VideoFrame m_pendingFrame;
     bool m_hasPendingFrame = false;
     qint64 m_lastFramePts = 0;
+    std::atomic<qint64> m_pendingSeek{-1};
+    std::atomic<bool> m_reloadPending{false};
 };
 
 #endif // VIDEOPLAYER_IMPL_H
