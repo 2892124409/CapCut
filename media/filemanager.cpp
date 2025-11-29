@@ -6,7 +6,8 @@ const QStringList &videoExtensions() {
         "mp4", "avi", "mkv", "mov", "wmv",
         "flv", "webm", "m4v", "3gp", "ts",
         "mp3", "wav", "flac", "aac", "ogg",
-        "m4a", "wma", "opus", "aiff", "ape"
+        "m4a", "wma", "opus", "aiff", "ape",
+        "jpg", "jpeg", "png", "bmp", "gif", "tiff", "tif", "webp", "ico", "svg"
     };
     return exts;
 }

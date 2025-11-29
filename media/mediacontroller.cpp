@@ -1,6 +1,7 @@
 #include "mediacontroller.h"
 #include "videoplayer_impl.h"
 #include "audioplayer.h"
+#include "imageviewer.h"
 #include <QDebug>
 #include <QQuickWindow>
 #include <QSGSimpleTextureNode>
@@ -104,6 +105,8 @@ bool MediaController::isStopped() const { return m_cachedStopped.load(); }
 // 槽函数实现
 void MediaController::onFrameChanged(const QImage &frame)
 {
+    if (sender() != m_currentPlayer)
+        return;
     QWriteLocker locker(&m_frameLock);
     m_currentFrame = frame;
     update();
@@ -111,30 +114,40 @@ void MediaController::onFrameChanged(const QImage &frame)
 
 void MediaController::onDurationChanged(qint64 duration)
 {
+    if (sender() != m_currentPlayer)
+        return;
     m_cachedDuration.store(duration);
     emit durationChanged();
 }
 
 void MediaController::onPositionChanged(qint64 position)
 {
+    if (sender() != m_currentPlayer)
+        return;
     m_cachedPosition.store(position);
     emit positionChanged();
 }
 
 void MediaController::onPlayingStateChanged(bool playing)
 {
+    if (sender() != m_currentPlayer)
+        return;
     m_cachedPlaying.store(playing);
     emit playingStateChanged();
 }
 
 void MediaController::onPausedStateChanged(bool paused)
 {
+    if (sender() != m_currentPlayer)
+        return;
     m_cachedPaused.store(paused);
     emit pausedStateChanged();
 }
 
 void MediaController::onStoppedStateChanged(bool stopped)
 {
+    if (sender() != m_currentPlayer)
+        return;
     m_cachedStopped.store(stopped);
     emit stoppedStateChanged();
 }
@@ -169,6 +182,12 @@ IMediaPlayer* MediaController::createMediaPlayer(const QString &filePath)
         extension == "ape") {
         return new AudioPlayer(this);
     }
+    if (extension == "jpg" || extension == "jpeg" || extension == "png" ||
+        extension == "bmp" || extension == "gif" || extension == "tiff" ||
+        extension == "tif" || extension == "webp" || extension == "ico" ||
+        extension == "svg") {
+        return new ImageViewer(this);
+    }
     
     return nullptr;
 }
@@ -176,6 +195,7 @@ IMediaPlayer* MediaController::createMediaPlayer(const QString &filePath)
 void MediaController::cleanupCurrentPlayer()
 {
     if (m_currentPlayer) {
+        QObject::disconnect(m_currentPlayer, nullptr, this, nullptr);
         m_currentPlayer->stop();
         m_currentPlayer->deleteLater();
         m_currentPlayer = nullptr;

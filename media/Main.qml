@@ -142,8 +142,9 @@ Window {
         id: fileDialog
         title: "请选择媒体文件"
         nameFilters: [
-            "媒体文件 (*.mp4 *.avi *.mkv *.mov *.wmv *.flv *.webm *.m4v *.3gp *.ts *.mp3 *.wav *.flac *.aac *.ogg *.m4a *.wma *.opus *.aiff *.ape)",
+            "媒体文件 (*.mp4 *.avi *.mkv *.mov *.wmv *.flv *.webm *.m4v *.3gp *.ts *.mp3 *.wav *.flac *.aac *.ogg *.m4a *.wma *.opus *.aiff *.ape *.jpg *.jpeg *.png *.bmp *.gif *.tiff *.tif *.webp *.ico *.svg)",
             "视频文件 (*.mp4 *.avi *.mkv *.mov *.wmv *.flv *.webm *.m4v *.3gp *.ts)",
+            "图片文件 (*.jpg *.jpeg *.png *.bmp *.gif *.tiff *.tif *.webp *.ico *.svg)",
             "音频文件 (*.mp3 *.wav *.flac *.aac *.ogg *.m4a *.wma *.opus *.aiff *.ape)",
             "所有文件 (*)"
         ]
@@ -160,7 +161,7 @@ Window {
     // 底部控制条
     Rectangle {
         id: controls
-        height: 90
+        height: isImage(fileManager.currentFile) ? 60 : 90
         color: "#1a1a1a"
         anchors.bottom: parent.bottom
         anchors.left: parent.left
@@ -184,6 +185,7 @@ Window {
                 id: progressBarContainer
                 width: parent.width
                 height: 30
+                visible: !isImage(fileManager.currentFile)
 
                 // 进度条背景
                 Rectangle {
@@ -407,11 +409,12 @@ Window {
                         id: playPauseButton
                         anchors.centerIn: parent
                         width: 140; height: 40
-                        text: mediaController.paused ? "▶ 播 放" : "⏸ 暂 停"
+                        text: isImage(fileManager.currentFile) ? "🖼 查看图片" : (mediaController.paused ? "▶ 播 放" : "⏸ 暂 停")
                         font.bold: true; font.pixelSize: 16
                         background: Rectangle { color: parent.down ? "#333" : "#444"; radius: 8; border.color: "#555" }
                         contentItem: Text { text: parent.text; font: parent.font; color: "white"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                         focusPolicy: Qt.NoFocus // 防止按钮窃取焦点
+                        enabled: !isImage(fileManager.currentFile)
                         onClicked: {
                             if (mediaController.paused) mediaController.play();
                             else mediaController.pause();
@@ -456,6 +459,7 @@ Window {
                     width: 150
                     height: parent.height
                     spacing: 10
+                    visible: !isImage(fileManager.currentFile)
 
                     Text {
                         text: "🔊"
@@ -502,5 +506,15 @@ Window {
                 }
             }
         }
+    }
+
+    function isImage(path) {
+        if (!path || path.length === 0)
+            return false
+        const lower = path.toLowerCase()
+        return lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".png") ||
+               lower.endsWith(".bmp") || lower.endsWith(".gif") || lower.endsWith(".tiff") ||
+               lower.endsWith(".tif") || lower.endsWith(".webp") || lower.endsWith(".ico") ||
+               lower.endsWith(".svg")
     }
 }
