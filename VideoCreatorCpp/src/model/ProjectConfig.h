@@ -11,6 +11,7 @@ namespace VideoCreator
     enum class SceneType
     {
         IMAGE_SCENE,
+        VIDEO_SCENE,
         TRANSITION
     };
 
@@ -56,11 +57,21 @@ namespace VideoCreator
         double start_offset = 0.0; // 开始偏移时间
     };
 
+    // 视频配置
+    struct VideoConfig
+    {
+        std::string path;       // 视频文件路径
+        double trim_start = 0.0; // 起始偏移
+        double trim_end = -1.0;  // 结束时间（-1 表示使用全长）
+        bool use_audio = true;   // 是否使用原视频音频
+    };
+
     // 资源配置
     struct ResourcesConfig
     {
         ImageConfig image; // 图片配置
         AudioConfig audio; // 音频配置
+        VideoConfig video; // 视频配置
     };
 
     // Ken Burns特效配置

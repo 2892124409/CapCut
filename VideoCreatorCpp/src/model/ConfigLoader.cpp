@@ -194,11 +194,32 @@ namespace VideoCreator
                 qDebug() << "无法获取音频时长，使用默认时长: 5秒";
             }
         }
+        else if (scene.type == SceneType::VIDEO_SCENE && !scene.resources.video.path.empty())
+        {
+            double videoDuration = getVideoDuration(scene.resources.video.path);
+            if (videoDuration > 0)
+            {
+                scene.duration = videoDuration;
+                qDebug() << "自动设置视频场景时长:" << videoDuration << "秒";
+            }
+            else
+            {
+                scene.duration = 5.0;
+                qDebug() << "无法获取视频时长，使用默认时长: 5秒";
+            }
+        }
+
         else if (scene.type == SceneType::IMAGE_SCENE)
         {
             // 没有音频的场景，使用默认时长5秒
             scene.duration = 5.0;
             qDebug() << "场景没有音频，使用默认时长: 5秒";
+        }
+
+        else if (scene.type == SceneType::VIDEO_SCENE)
+        {
+            scene.duration = 5.0;
+            qDebug() << "视频场景缺少资源，使用默认时长: 5秒";
         }
 
         return true;
@@ -210,6 +231,15 @@ namespace VideoCreator
         if (json.contains("image") && json["image"].isObject())
         {
             if (!parseImageConfig(json["image"].toObject(), resources.image))
+            {
+                return false;
+            }
+        }
+
+        // 解析视频配置
+        if (json.contains("video") && json["video"].isObject())
+        {
+            if (!parseVideoConfig(json["video"].toObject(), resources.video))
             {
                 return false;
             }
@@ -275,6 +305,31 @@ namespace VideoCreator
         if (json.contains("start_offset") && json["start_offset"].isDouble())
         {
             audio.start_offset = json["start_offset"].toDouble();
+        }
+
+        return true;
+    }
+
+    bool ConfigLoader::parseVideoConfig(const QJsonObject &json, VideoConfig &video)
+    {
+        if (json.contains("path") && json["path"].isString())
+        {
+            video.path = json["path"].toString().toUtf8().toStdString();
+        }
+
+        if (json.contains("trim_start") && json["trim_start"].isDouble())
+        {
+            video.trim_start = json["trim_start"].toDouble();
+        }
+
+        if (json.contains("trim_end") && json["trim_end"].isDouble())
+        {
+            video.trim_end = json["trim_end"].toDouble();
+        }
+
+        if (json.contains("use_audio") && json["use_audio"].isBool())
+        {
+            video.use_audio = json["use_audio"].toBool();
         }
 
         return true;
@@ -464,6 +519,8 @@ namespace VideoCreator
     {
         if (typeStr == "image_scene")
             return SceneType::IMAGE_SCENE;
+        if (typeStr == "video_scene")
+            return SceneType::VIDEO_SCENE;
         if (typeStr == "transition")
             return SceneType::TRANSITION;
         return SceneType::IMAGE_SCENE; // 默认值
@@ -560,6 +617,83 @@ namespace VideoCreator
         if (duration > 0)
         {
             qDebug() << "音频时长:" << duration << "秒" << "文件:" << QString::fromStdString(audioPath);
+            return duration;
+        }
+
+        return -1.0;
+    }
+
+    double ConfigLoader::getVideoDuration(const std::string &videoPath)
+    {
+        if (videoPath.empty())
+        {
+            qDebug() << "视频路径为空";
+            return -1.0;
+        }
+
+        QFile file(QString::fromStdString(videoPath));
+        if (!file.exists())
+        {
+            qDebug() << "视频文件不存在:" << QString::fromStdString(videoPath);
+            return -1.0;
+        }
+
+        AVFormatContext *formatCtx = nullptr;
+        int ret = avformat_open_input(&formatCtx, videoPath.c_str(), nullptr, nullptr);
+
+        if (ret < 0)
+        {
+            char errbuf[256];
+            av_strerror(ret, errbuf, sizeof(errbuf));
+            qDebug() << "无法打开视频文件:" << QString::fromStdString(videoPath);
+            qDebug() << "错误码:" << ret << "错误信息:" << errbuf;
+            return -1.0;
+        }
+
+        ret = avformat_find_stream_info(formatCtx, nullptr);
+        if (ret < 0)
+        {
+            char errbuf[256];
+            av_strerror(ret, errbuf, sizeof(errbuf));
+            qDebug() << "无法获取视频流信息:" << QString::fromStdString(videoPath);
+            qDebug() << "错误码:" << ret << "错误信息:" << errbuf;
+            avformat_close_input(&formatCtx);
+            return -1.0;
+        }
+
+        int videoStreamIndex = -1;
+        for (unsigned int i = 0; i < formatCtx->nb_streams; i++)
+        {
+            if (formatCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
+            {
+                videoStreamIndex = i;
+                break;
+            }
+        }
+
+        if (videoStreamIndex == -1)
+        {
+            qDebug() << "未找到视频流:" << QString::fromStdString(videoPath);
+            avformat_close_input(&formatCtx);
+            return -1.0;
+        }
+
+        double duration = 0.0;
+        if (formatCtx->duration != AV_NOPTS_VALUE)
+        {
+            duration = formatCtx->duration / (double)AV_TIME_BASE;
+        }
+        else if (formatCtx->streams[videoStreamIndex]->duration != AV_NOPTS_VALUE)
+        {
+            AVStream *stream = formatCtx->streams[videoStreamIndex];
+            duration = stream->duration * av_q2d(stream->time_base);
+        }
+
+        avformat_close_input(&formatCtx);
+
+        if (duration > 0)
+        {
+            qDebug() << "视频时长:" << duration << "秒" << "文件:" << QString::fromStdString(videoPath);
             return duration;
         }
 

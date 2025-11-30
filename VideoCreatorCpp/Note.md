@@ -22,3 +22,22 @@
 
 ***
 
+# Ken Burns/转场导致系统重启问题分析与解决
+
+## 问题现象
+渲染带 Ken Burns 或转场的工程时，可执行程序瞬间占用数 GB 到数十 GB 内存，Windows 在内存耗尽后直接强制重启。
+
+## 原因分析
+### 通用原因
+- EffectProcessor 会把 Ken Burns、转场的所有帧一次性生成并缓存（每帧都是完整的 1080p/4K YUV420P），场景越长、分辨率越高占用越夸张。
+- renderTransition 在取起始/结束帧时还会重复运行整段 Ken Burns 序列，进一步放大峰值内存。
+
+## 解决方案
+### 通用修复
+- 将 EffectProcessor 改成“启动 + 单帧拉取”模式：startKenBurnsSequence / fetchKenBurnsFrame、startTransitionSequence /fetchTransitionFrame，随取随用，不再缓存整段序列。
+- renderScene、renderTransition 主循环中按帧调用上述接口，同时保留现有的音频同步与编码逻辑，确保只持有当前帧和编码器缓冲。
+- 在需要从 Ken Burns 序列获取最后/第一帧时，只遍历到目标帧立即复制释放，避免为了单帧生成整段缓存。
+
+### 结果
+- 峰值内存降到“一两帧 + 编码器 FIFO”的常规水平，长场景或高分辨率项目不再触发系统级 OOM。
+- 渲染流程保持原有功能，CPU/GPU 负载按帧推进，整体稳定性恢复。

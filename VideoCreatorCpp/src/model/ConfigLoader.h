@@ -37,6 +37,8 @@ namespace VideoCreator
         // 解析资源配置
         bool parseResourcesConfig(const QJsonObject &json, ResourcesConfig &resources);
 
+        bool parseVideoConfig(const QJsonObject &json, VideoConfig &video);
+
         // 解析图片配置
         bool parseImageConfig(const QJsonObject &json, ImageConfig &image);
 
@@ -66,6 +68,7 @@ namespace VideoCreator
 
         // 获取音频文件时长（秒）
         double getAudioDuration(const std::string &audioPath);
+        double getVideoDuration(const std::string &videoPath);
 
         // 字符串到枚举转换
         SceneType stringToSceneType(const QString &typeStr);

@@ -8,10 +8,19 @@
             "id": 1,
             "type": "image_scene",
             "resources": {
-                "image": { "path": "d:/CapCut/VideoCreatorCpp/assets/shot1.png" },
-                "audio": { "path": "d:/CapCut/VideoCreatorCpp/assets/narration1.mp3" }
+                "image": {
+                    "path": "d:/CapCut/VideoCreatorCpp/assets/shot1.png"
+                },
+                "audio": {
+                    "path": "d:/CapCut/VideoCreatorCpp/assets/narration1.mp3"
+                }
             },
-            "effects": { "ken_burns": { "enabled": true, "preset": "zoom_in" } }
+            "effects": {
+                "ken_burns": {
+                    "enabled": true,
+                    "preset": "zoom_in"
+                }
+            }
         },
         {
             "id": 2,
@@ -23,10 +32,19 @@
             "id": 3,
             "type": "image_scene",
             "resources": {
-                "image": { "path": "d:/CapCut/VideoCreatorCpp/assets/shot2.png" },
-                "audio": { "path": "d:/CapCut/VideoCreatorCpp/assets/narration2.mp3" }
+                "image": {
+                    "path": "d:/CapCut/VideoCreatorCpp/assets/shot2.png"
+                },
+                "audio": {
+                    "path": "d:/CapCut/VideoCreatorCpp/assets/narration2.mp3"
+                }
             },
-            "effects": { "ken_burns": { "enabled": true, "preset": "zoom_out" } }
+            "effects": {
+                "ken_burns": {
+                    "enabled": true,
+                    "preset": "zoom_out"
+                }
+            }
         },
         {
             "id": 4,
@@ -38,10 +56,19 @@
             "id": 5,
             "type": "image_scene",
             "resources": {
-                "image": { "path": "d:/CapCut/VideoCreatorCpp/assets/shot1.png" },
-                "audio": { "path": "d:/CapCut/VideoCreatorCpp/assets/narration1.mp3" }
+                "image": {
+                    "path": "d:/CapCut/VideoCreatorCpp/assets/shot1.png"
+                },
+                "audio": {
+                    "path": "d:/CapCut/VideoCreatorCpp/assets/narration1.mp3"
+                }
             },
-            "effects": { "ken_burns": { "enabled": true, "preset": "pan_right" } }
+            "effects": {
+                "ken_burns": {
+                    "enabled": true,
+                    "preset": "pan_right"
+                }
+            }
         },
         {
             "id": 6,
@@ -53,10 +80,43 @@
             "id": 7,
             "type": "image_scene",
             "resources": {
-                "image": { "path": "d:/CapCut/VideoCreatorCpp/assets/shot2.png" },
-                "audio": { "path": "d:/CapCut/VideoCreatorCpp/assets/narration2.mp3" }
+                "image": {
+                    "path": "d:/CapCut/VideoCreatorCpp/assets/shot2.png"
+                },
+                "audio": {
+                    "path": "d:/CapCut/VideoCreatorCpp/assets/narration2.mp3"
+                }
             },
-            "effects": { "ken_burns": { "enabled": true, "preset": "pan_left" } }
+            "effects": {
+                "ken_burns": {
+                    "enabled": true,
+                    "preset": "pan_left"
+                }
+            }
+        },
+        {
+            "id": 8,
+            "type": "video_scene",
+            "resources": {
+                "video": {
+                    "path": "d:/CapCut/VideoCreatorCpp/assets/clip_intro.mp4",
+                    "use_audio": true
+                }
+            }
+        },
+        {
+            "id": 9,
+            "type": "video_scene",
+            "resources": {
+                "video": {
+                    "path": "d:/CapCut/VideoCreatorCpp/assets/clip_outro.mp4",
+                    "use_audio": false
+                },
+                "audio": {
+                    "path": "d:/CapCut/VideoCreatorCpp/assets/narration2.mp3",
+                    "volume": 0.8
+                }
+            }
         }
     ]
 }

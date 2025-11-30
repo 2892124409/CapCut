@@ -37,6 +37,8 @@ qt_add_executable(VideoCreatorCpp
     src/decoder/ImageDecoder.h
     src/decoder/AudioDecoder.cpp
     src/decoder/AudioDecoder.h
+    src/decoder/VideoDecoder.cpp
+    src/decoder/VideoDecoder.h
     src/filter/EffectProcessor.cpp
     src/filter/EffectProcessor.h
     src/ffmpeg_utils/AvFrameWrapper.h

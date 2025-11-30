@@ -1,6 +1,7 @@
 #include "RenderEngine.h"
 #include "decoder/ImageDecoder.h"
 #include "decoder/AudioDecoder.h"
+#include "decoder/VideoDecoder.h"
 #include "filter/EffectProcessor.h"
 #include "ffmpeg_utils/AvFrameWrapper.h"
 #include "ffmpeg_utils/AvPacketWrapper.h"
@@ -274,14 +275,34 @@ namespace VideoCreator
 
     bool RenderEngine::renderScene(const SceneConfig &scene)
     {
+        const bool isVideoScene = scene.type == SceneType::VIDEO_SCENE;
+
         ImageDecoder imageDecoder;
-        if (!scene.resources.image.path.empty() && !imageDecoder.open(scene.resources.image.path)) {
+        if (!isVideoScene && !scene.resources.image.path.empty() && !imageDecoder.open(scene.resources.image.path)) {
              qDebug() << "无法打开图片: " << imageDecoder.getErrorString();
         }
 
+        VideoDecoder videoDecoder;
+        bool videoSourceAvailable = false;
+        if (isVideoScene) {
+            if (scene.resources.video.path.empty()) {
+                m_errorString = "视频场景缺少视频文件路径";
+                return false;
+            }
+            if (!videoDecoder.open(scene.resources.video.path)) {
+                m_errorString = "无法打开视频: " + videoDecoder.getErrorString();
+                return false;
+            }
+            videoSourceAvailable = true;
+        }
+
         AudioDecoder audioDecoder;
-        bool audioAvailable = m_audioStream && !scene.resources.audio.path.empty() && audioDecoder.open(scene.resources.audio.path);
-        if (m_audioStream && !scene.resources.audio.path.empty() && !audioAvailable) {
+        std::string resolvedAudioPath = scene.resources.audio.path;
+        if (resolvedAudioPath.empty() && isVideoScene && scene.resources.video.use_audio) {
+            resolvedAudioPath = scene.resources.video.path;
+        }
+        bool audioAvailable = m_audioStream && !resolvedAudioPath.empty() && audioDecoder.open(resolvedAudioPath);
+        if (m_audioStream && !resolvedAudioPath.empty() && !audioAvailable) {
             qDebug() << "无法打开音频: " << audioDecoder.getErrorString();
         }
 
@@ -293,7 +314,13 @@ namespace VideoCreator
         }
 
         double sceneDuration = scene.duration;
-        if (audioAvailable) {
+        if (isVideoScene && videoSourceAvailable) {
+            double videoDuration = videoDecoder.getDuration();
+            if (videoDuration > 0) {
+                sceneDuration = videoDuration;
+                 qDebug() << "场景时长已同步到视频时长:" << sceneDuration << "秒";
+            }
+        } else if (audioAvailable) {
             double audioDuration = audioDecoder.getDuration();
             if (audioDuration > 0) {
                 sceneDuration = audioDuration;
@@ -311,25 +338,28 @@ namespace VideoCreator
         effectProcessor.initialize(m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P, m_config.project.fps);
         
         FFmpegUtils::AvFramePtr sourceImageFrame;
-        if (imageDecoder.getWidth() > 0) {
+        if (!isVideoScene && imageDecoder.getWidth() > 0) {
             sourceImageFrame = imageDecoder.decodeAndCache();
              if (sourceImageFrame) {
                 auto scaledFrame = imageDecoder.scaleToSize(sourceImageFrame, m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P);
                 sourceImageFrame = scaledFrame ? std::move(scaledFrame) : std::move(sourceImageFrame);
             }
         }
-        if (!sourceImageFrame) {
+        if (!isVideoScene && !sourceImageFrame) {
              sourceImageFrame = generateTestFrame(m_frameCount, m_config.project.width, m_config.project.height);
         }
 
-        if (scene.effects.ken_burns.enabled) {
-            if (!effectProcessor.processKenBurnsEffect(scene.effects.ken_burns, sourceImageFrame.get(), totalVideoFramesInScene)) {
+        bool kenBurnsActive = false;
+        if (!isVideoScene && scene.effects.ken_burns.enabled) {
+            if (!effectProcessor.startKenBurnsSequence(scene.effects.ken_burns, sourceImageFrame.get(), totalVideoFramesInScene)) {
                 m_errorString = "处理Ken Burns特效序列失败: " + effectProcessor.getErrorString();
                 return false;
             }
+            kenBurnsActive = true;
         }
     
         int startFrameCount = m_frameCount;
+        bool videoEOF = false;
 
         while (m_frameCount < startFrameCount + totalVideoFramesInScene)
         {
@@ -340,12 +370,27 @@ namespace VideoCreator
                 // --- VIDEO PART ---
                 FFmpegUtils::AvFramePtr videoFrame;
 
-                if (scene.effects.ken_burns.enabled) {
-                    int scene_frame_index = m_frameCount - startFrameCount;
-                    const AVFrame* kbFrame = effectProcessor.getKenBurnsFrame(scene_frame_index);
-                    if (kbFrame) {
-                        videoFrame = FFmpegUtils::copyAvFrame(kbFrame);
+                if (isVideoScene) {
+                    if (videoEOF) {
+                        break;
+                    }
+                    FFmpegUtils::AvFramePtr decodedFrame;
+                    int decodeResult = videoDecoder.decodeFrame(decodedFrame);
+                    if (decodeResult > 0 && decodedFrame) {
+                        videoFrame = videoDecoder.scaleFrame(decodedFrame.get(), m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P);
+                        if (!videoFrame) {
+                            m_errorString = "缩放视频帧失败: " + videoDecoder.getErrorString();
+                            return false;
+                        }
+                    } else if (decodeResult == 0) {
+                        videoEOF = true;
+                        break;
                     } else {
+                        m_errorString = "解码视频帧失败: " + videoDecoder.getErrorString();
+                        return false;
+                    }
+                } else if (kenBurnsActive) {
+                    if (!effectProcessor.fetchKenBurnsFrame(videoFrame)) {
                         m_errorString = "获取Ken Burns缓存帧失败: " + effectProcessor.getErrorString();
                         return false;
                     }
@@ -456,10 +501,15 @@ namespace VideoCreator
             AudioDecoder tempAudioDecoder;
             if (!fromScene.resources.audio.path.empty() && tempAudioDecoder.open(fromScene.resources.audio.path)) {
                 double audioDuration = tempAudioDecoder.getDuration();
-                if (audioDuration > 0) fromSceneDuration = audioDuration;
+                if (audioDuration > 0) {
+                    fromSceneDuration = audioDuration;
+                }
                 tempAudioDecoder.close();
             }
             int totalFramesInFromScene = static_cast<int>(std::round(fromSceneDuration * m_config.project.fps));
+            if (totalFramesInFromScene <= 0) {
+                totalFramesInFromScene = 1;
+            }
 
             // 2. Get the original, unscaled source image for the effect processor
             auto originalFromFrame = fromDecoder.decodeAndCache();
@@ -476,26 +526,36 @@ namespace VideoCreator
             }
             scaledFromFrame->pts = 0;
 
-            // 3. Process the Ken Burns effect to get the last frame
             EffectProcessor fromSceneProcessor;
             fromSceneProcessor.initialize(m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P, m_config.project.fps);
-            if (fromSceneProcessor.processKenBurnsEffect(fromScene.effects.ken_burns, scaledFromFrame.get(), totalFramesInFromScene)) {
-                const AVFrame* lastKbFrame = fromSceneProcessor.getKenBurnsFrame(totalFramesInFromScene - 1);
-                if (lastKbFrame) {
-                    finalFromFrame = FFmpegUtils::copyAvFrame(lastKbFrame);
-                } else {
-                    m_errorString = "'from' 场景 Ken Burns 特效处理后未能获取最后一帧: " + fromSceneProcessor.getErrorString();
-                    return false;
-                }
-            } else {
+            if (!fromSceneProcessor.startKenBurnsSequence(fromScene.effects.ken_burns, scaledFromFrame.get(), totalFramesInFromScene)) {
                 m_errorString = "处理 'from' 场景的 Ken Burns 特效失败: " + fromSceneProcessor.getErrorString();
                 return false;
             }
 
+            FFmpegUtils::AvFramePtr lastKbFrame;
+            for (int frameIndex = 0; frameIndex < totalFramesInFromScene; ++frameIndex) {
+                if (!fromSceneProcessor.fetchKenBurnsFrame(lastKbFrame)) {
+                    m_errorString = "'from' 场景 Ken Burns 特效处理后未能获取最后一帧: " + fromSceneProcessor.getErrorString();
+                    return false;
+                }
+            }
+            if (!lastKbFrame) {
+                m_errorString = "'from' 场景 Ken Burns 特效未生成任何帧";
+                return false;
+            }
+            finalFromFrame = FFmpegUtils::copyAvFrame(lastKbFrame.get());
+            if (!finalFromFrame) {
+                m_errorString = "'from' 场景 Ken Burns 特效最后一帧复制失败";
+                return false;
+            }
         } else {
             qDebug() << "起点场景无特效，使用缩放后的静态图片。";
             auto fromFrame = fromDecoder.decode();
-            if (!fromFrame) { m_errorString = "解码 'from' 帧失败"; return false; }
+            if (!fromFrame) {
+                m_errorString = "解码 'from' 帧失败";
+                return false;
+            }
             finalFromFrame = fromDecoder.scaleToSize(fromFrame, m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P);
         }
         
@@ -512,36 +572,43 @@ namespace VideoCreator
             AudioDecoder tempAudioDecoder;
             if (!toScene.resources.audio.path.empty() && tempAudioDecoder.open(toScene.resources.audio.path)) {
                 double audioDuration = tempAudioDecoder.getDuration();
-                if (audioDuration > 0) toSceneDuration = audioDuration;
+                if (audioDuration > 0) {
+                    toSceneDuration = audioDuration;
+                }
                 tempAudioDecoder.close();
             }
             int totalFramesInToScene = static_cast<int>(std::round(toSceneDuration * m_config.project.fps));
-            if (totalFramesInToScene <= 0) totalFramesInToScene = 1;
+            if (totalFramesInToScene <= 0) {
+                totalFramesInToScene = 1;
+            }
 
             auto originalToFrame = toDecoder.decode();
             if (!originalToFrame) {
                 m_errorString = "解码 'to' 场景的原始图片失败";
                 return false;
             }
-            scaledToFrame = toDecoder.scaleToSize(originalToFrame, m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P);
-            if (!scaledToFrame) {
+            auto scaledSourceFrame = toDecoder.scaleToSize(originalToFrame, m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P);
+            if (!scaledSourceFrame) {
                 m_errorString = "缩放 'to' 场景图片失败，原因: " + toDecoder.getErrorString();
                 return false;
             }
-            scaledToFrame->pts = 0;
+            scaledSourceFrame->pts = 0;
 
             EffectProcessor toSceneProcessor;
             toSceneProcessor.initialize(m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P, m_config.project.fps);
-            if (toSceneProcessor.processKenBurnsEffect(toScene.effects.ken_burns, scaledToFrame.get(), totalFramesInToScene)) {
-                const AVFrame* firstKbFrame = toSceneProcessor.getKenBurnsFrame(0);
-                if (firstKbFrame) {
-                    scaledToFrame = FFmpegUtils::copyAvFrame(firstKbFrame);
-                } else {
-                    m_errorString = "'to' 场景 Ken Burns 特效处理后未能获取第一帧: " + toSceneProcessor.getErrorString();
-                    return false;
-                }
-            } else {
+            if (!toSceneProcessor.startKenBurnsSequence(toScene.effects.ken_burns, scaledSourceFrame.get(), totalFramesInToScene)) {
                 m_errorString = "处理 'to' 场景的 Ken Burns 特效失败: " + toSceneProcessor.getErrorString();
+                return false;
+            }
+
+            FFmpegUtils::AvFramePtr firstKbFrame;
+            if (!toSceneProcessor.fetchKenBurnsFrame(firstKbFrame)) {
+                m_errorString = "'to' 场景 Ken Burns 特效处理后未能获取第一帧: " + toSceneProcessor.getErrorString();
+                return false;
+            }
+            scaledToFrame = FFmpegUtils::copyAvFrame(firstKbFrame.get());
+            if (!scaledToFrame) {
+                m_errorString = "'to' 场景 Ken Burns 首帧复制失败";
                 return false;
             }
         } else {
@@ -556,20 +623,19 @@ namespace VideoCreator
                 return false;
             }
         }
-        
+
         // --- Apply transition ---
         EffectProcessor transitionProcessor;
         transitionProcessor.initialize(m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P, m_config.project.fps);
+        if (!transitionProcessor.startTransitionSequence(transitionScene.transition_type, finalFromFrame.get(), scaledToFrame.get(), totalFrames)) {
+            m_errorString = "应用转场特效失败: " + transitionProcessor.getErrorString();
+            return false;
+        }
 
         for (int frameIndex = 0; frameIndex < totalFrames; ++frameIndex)
         {
             FFmpegUtils::AvFramePtr blendedFrame;
-            switch (transitionScene.transition_type) {
-                case TransitionType::CROSSFADE: blendedFrame = transitionProcessor.applyCrossfade(finalFromFrame.get(), scaledToFrame.get(), frameIndex, totalFrames); break;
-                case TransitionType::WIPE: blendedFrame = transitionProcessor.applyWipe(finalFromFrame.get(), scaledToFrame.get(), frameIndex, totalFrames); break;
-                case TransitionType::SLIDE: blendedFrame = transitionProcessor.applySlide(finalFromFrame.get(), scaledToFrame.get(), frameIndex, totalFrames); break;
-            }
-            if (!blendedFrame) {
+            if (!transitionProcessor.fetchTransitionFrame(blendedFrame)) {
                 m_errorString = "应用转场特效失败: " + transitionProcessor.getErrorString();
                 return false;
             }
@@ -608,7 +674,7 @@ namespace VideoCreator
                     audioFrame->format = m_audioCodecContext->sample_fmt;
                     audioFrame->sample_rate = m_audioCodecContext->sample_rate;
 
-                    ret = av_frame_get_buffer(audioFrame.get(), 0);
+                    int ret = av_frame_get_buffer(audioFrame.get(), 0);
                     if (ret < 0) {
                          m_errorString = format_ffmpeg_error(ret, "为静音帧分配缓冲区失败 (Transition)");
                          return false;

@@ -7,6 +7,7 @@
 - **JSON驱动**: 通过 `test_config.json` 文件灵活定义视频的每一个场景和转场。
 - **音画同步**: 实现了精确的音视频同步机制，确保画面与声音完美对齐。
 - **动态场景时长**: 场景时长可由其关联的音频文件长度自动决定，优先于在JSON中指定的 `duration`。
+- **视频片段拼接**: 新增 `video_scene` 类型，可顺序拼接多个视频文件，并可选择复用原始音轨或覆盖独立配音。
 - **视频特效**: 支持 Ken Burns（推拉摇移）特效，可通过预设 (`preset`) 或具体坐标参数进行配置。
 - **转场效果**: 支持场景间的交叉淡化（crossfade）、擦除（wipe）和滑动（slide）转场。
 - **标准编码输出**: 使用 FFmpeg 将视频编码为 H.264，音频编码为 AAC，并封装在 MP4 容器中。
@@ -109,6 +110,11 @@ cmake --build .
     - 对于 `image_scene`，如果同时提供了有效的 `audio` 路径，**程序将优先使用音频文件的实际时长**，此时 `duration` 值会被忽略。
     - 如果没有提供音频，或音频文件无法读取，则使用 `duration` 值。
     - 对于 `transition`，`duration` 表示转场的持续时间。
+
+- **`video_scene` 与 `resources.video`**:
+    - 在 `video_scene` 中通过 `resources.video.path` 指定视频文件，支持可选的 `trim_start`/`trim_end`（单位秒）以及 `use_audio`。
+    - 当 `use_audio` 为 `true` 且未提供 `resources.audio` 时，程序会自动提取视频自带音轨并保持与画面同步。
+    - 若同时提供 `resources.audio`，则使用外部音频并可继续使用音量淡入淡出等效果。
 
 - **`effects.ken_burns`**:
     - **`enabled`**: `true` 表示启用特效。
