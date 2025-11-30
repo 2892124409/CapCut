@@ -161,7 +161,7 @@ namespace VideoCreator
         args << "time_base=1/" << out_sample_rate
              << ":sample_rate=" << out_sample_rate
              << ":sample_fmt=" << av_get_sample_fmt_name(AV_SAMPLE_FMT_FLTP)
-             << ":channel_layout=" << out_ch_layout.nb_channels;
+             << ":channel_layout=" << out_ch_layout.u.mask;
         
         int ret = avfilter_graph_create_filter(&m_bufferSrcCtx, abuffer_src, "in", args.str().c_str(), nullptr, m_filterGraph);
         if (ret < 0) {

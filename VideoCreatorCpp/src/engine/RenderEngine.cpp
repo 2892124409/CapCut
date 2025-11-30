@@ -79,26 +79,15 @@ namespace VideoCreator
         m_progress = 0;
         m_lastReportedProgress = -1;
 
-        // 计算总帧数用于进度报告
+
+        // 计算总帧数用于进度报告（scene.duration 已在 ConfigLoader 中同步到真实时长）
         double totalDuration = 0;
-        for(const auto& scene : m_config.scenes) {
-            if (!scene.resources.audio.path.empty()) {
-                AudioDecoder tempAudioDecoder;
-                if (tempAudioDecoder.open(scene.resources.audio.path)) {
-                    double audioDuration = tempAudioDecoder.getDuration();
-                    if (audioDuration > 0) {
-                        totalDuration += audioDuration;
-                    } else {
-                        totalDuration += scene.duration; // Fallback to scene duration
-                    }
-                    tempAudioDecoder.close();
-                } else {
-                    totalDuration += scene.duration; // Fallback if audio can't be opened
-                }
-            } else {
+        for (const auto &scene : m_config.scenes) {
+            if (scene.duration > 0) {
                 totalDuration += scene.duration;
             }
         }
+
         m_totalProjectFrames = totalDuration * m_config.project.fps;
 
         if (!createOutputContext()) return false;
@@ -155,6 +144,12 @@ namespace VideoCreator
         }
 
         qDebug() << "视频渲染完成！总帧数: " << m_frameCount;
+
+        if (m_lastReportedProgress < 100) {
+            m_progress = 100;
+            m_lastReportedProgress = m_progress;
+        }
+
         return true;
     }
 
@@ -1060,7 +1055,6 @@ namespace VideoCreator
         if (m_totalProjectFrames > 0) {
             m_progress = static_cast<int>((m_frameCount / m_totalProjectFrames) * 100);
             if (m_progress > m_lastReportedProgress) {
-                qDebug() << "合成进度: " << m_progress << "%";
                 m_lastReportedProgress = m_progress;
             }
         }
