@@ -96,6 +96,12 @@
         },
         {
             "id": 8,
+            "type": "transition",
+            "transition_type": "crossfade",
+            "duration": 1.0
+        },
+        {
+            "id": 9,
             "type": "video_scene",
             "resources": {
                 "video": {
@@ -105,7 +111,13 @@
             }
         },
         {
-            "id": 9,
+            "id": 10,
+            "type": "transition",
+            "transition_type": "crossfade",
+            "duration": 1.0
+        },
+        {
+            "id": 11,
             "type": "video_scene",
             "resources": {
                 "video": {

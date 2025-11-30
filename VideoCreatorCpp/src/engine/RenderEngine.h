@@ -55,6 +55,9 @@ namespace VideoCreator
         // 为转场生成音频淡入淡出 / 交叉混音
         bool renderAudioTransition(const SceneConfig &fromScene, const SceneConfig &toScene, double duration_seconds);
 
+        // 从视频场景提取指定帧（首帧或末帧）并缩放到项目分辨率
+        FFmpegUtils::AvFramePtr extractVideoSceneFrame(const SceneConfig &scene, bool fetchLastFrame);
+
         // 生成测试帧 (用于演示)
         FFmpegUtils::AvFramePtr generateTestFrame(int frameIndex, int width, int height);
 

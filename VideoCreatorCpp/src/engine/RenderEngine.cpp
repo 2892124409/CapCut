@@ -486,17 +486,21 @@ namespace VideoCreator
         }
         
         ImageDecoder fromDecoder, toDecoder;
-        if (!fromDecoder.open(fromScene.resources.image.path) || !toDecoder.open(toScene.resources.image.path)) {
-            m_errorString = "无法打开转场中的图片";
-            return false;
-        }
 
         // --- Determine the correct FROM frame ---
         FFmpegUtils::AvFramePtr finalFromFrame;
-        if (fromScene.effects.ken_burns.enabled) {
+        if (fromScene.type == SceneType::VIDEO_SCENE) {
+            finalFromFrame = extractVideoSceneFrame(fromScene, true);
+            if (!finalFromFrame) {
+                return false;
+            }
+        } else if (fromScene.effects.ken_burns.enabled) {
+            if (fromScene.resources.image.path.empty() || !fromDecoder.open(fromScene.resources.image.path)) {
+                m_errorString = "无法打开转场中的起始图片";
+                return false;
+            }
             qDebug() << "起点场景包含Ken Burns特效，计算其最后一帧。";
             
-            // 1. Get scene duration, synchronized with audio if present
             double fromSceneDuration = fromScene.duration;
             AudioDecoder tempAudioDecoder;
             if (!fromScene.resources.audio.path.empty() && tempAudioDecoder.open(fromScene.resources.audio.path)) {
@@ -511,14 +515,12 @@ namespace VideoCreator
                 totalFramesInFromScene = 1;
             }
 
-            // 2. Get the original, unscaled source image for the effect processor
             auto originalFromFrame = fromDecoder.decodeAndCache();
             if (!originalFromFrame) {
                 m_errorString = "解码 'from' 场景的原始图片失败";
                 return false;
             }
 
-            // 3. Scale to target size/format with proper color metadata before feeding Ken Burns
             auto scaledFromFrame = fromDecoder.scaleToSize(originalFromFrame, m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P);
             if (!scaledFromFrame) {
                 m_errorString = "缩放 'from' 场景图片失败，原因: " + fromDecoder.getErrorString();
@@ -550,6 +552,10 @@ namespace VideoCreator
                 return false;
             }
         } else {
+            if (fromScene.resources.image.path.empty() || !fromDecoder.open(fromScene.resources.image.path)) {
+                m_errorString = "无法打开转场中的起始图片";
+                return false;
+            }
             qDebug() << "起点场景无特效，使用缩放后的静态图片。";
             auto fromFrame = fromDecoder.decode();
             if (!fromFrame) {
@@ -566,7 +572,12 @@ namespace VideoCreator
 
         // --- Determine the correct TO frame (prefer特效首帧) ---
         FFmpegUtils::AvFramePtr scaledToFrame;
-        if (toScene.effects.ken_burns.enabled) {
+        if (toScene.type == SceneType::VIDEO_SCENE) {
+            scaledToFrame = extractVideoSceneFrame(toScene, false);
+            if (!scaledToFrame) {
+                return false;
+            }
+        } else if (toScene.effects.ken_burns.enabled) {
             // 同步音频时长
             double toSceneDuration = toScene.duration;
             AudioDecoder tempAudioDecoder;
@@ -580,6 +591,11 @@ namespace VideoCreator
             int totalFramesInToScene = static_cast<int>(std::round(toSceneDuration * m_config.project.fps));
             if (totalFramesInToScene <= 0) {
                 totalFramesInToScene = 1;
+            }
+
+            if (toScene.resources.image.path.empty() || !toDecoder.open(toScene.resources.image.path)) {
+                m_errorString = "无法打开转场中的目标图片";
+                return false;
             }
 
             auto originalToFrame = toDecoder.decode();
@@ -612,6 +628,10 @@ namespace VideoCreator
                 return false;
             }
         } else {
+            if (toScene.resources.image.path.empty() || !toDecoder.open(toScene.resources.image.path)) {
+                m_errorString = "无法打开转场中的目标图片";
+                return false;
+            }
             auto toFrame = toDecoder.decode();
             if (!toFrame) {
                 m_errorString = "解码 'to' 帧失败";
@@ -857,6 +877,53 @@ namespace VideoCreator
         }
 
         return true;
+    }
+
+    FFmpegUtils::AvFramePtr RenderEngine::extractVideoSceneFrame(const SceneConfig &scene, bool fetchLastFrame)
+    {
+        if (scene.type != SceneType::VIDEO_SCENE) {
+            m_errorString = "场景不是视频类型";
+            return nullptr;
+        }
+        if (scene.resources.video.path.empty()) {
+            m_errorString = "视频场景缺少视频文件路径";
+            return nullptr;
+        }
+
+        VideoDecoder decoder;
+        if (!decoder.open(scene.resources.video.path)) {
+            m_errorString = "无法打开视频: " + decoder.getErrorString();
+            return nullptr;
+        }
+
+        FFmpegUtils::AvFramePtr selectedFrame;
+        bool gotFrame = false;
+
+        while (true) {
+            FFmpegUtils::AvFramePtr decodedFrame;
+            int ret = decoder.decodeFrame(decodedFrame);
+            if (ret <= 0) {
+                if (!gotFrame) {
+                    m_errorString = "无法解码视频场景帧: " + decoder.getErrorString();
+                    return nullptr;
+                }
+                break;
+            }
+            gotFrame = true;
+
+            auto scaledFrame = decoder.scaleFrame(decodedFrame.get(), m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P);
+            if (!scaledFrame) {
+                m_errorString = "缩放视频帧失败: " + decoder.getErrorString();
+                return nullptr;
+            }
+            selectedFrame = std::move(scaledFrame);
+
+            if (!fetchLastFrame) {
+                break;
+            }
+        }
+
+        return selectedFrame;
     }
 
     FFmpegUtils::AvFramePtr RenderEngine::generateTestFrame(int frameIndex, int width, int height)
