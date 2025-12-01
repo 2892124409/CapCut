@@ -7,6 +7,7 @@
 #include "ffmpeg_utils/AvPacketWrapper.h"
 #include <QDebug>
 #include <vector>
+#include <deque>
 #include <algorithm>
 #include <cmath>
 
@@ -60,7 +61,8 @@ namespace VideoCreator
 
     RenderEngine::RenderEngine()
         : m_videoStream(nullptr), m_audioStream(nullptr), m_audioFifo(nullptr), m_frameCount(0), m_audioSamplesCount(0), m_progress(0),
-          m_totalProjectFrames(0), m_lastReportedProgress(-1), m_enableAudioTransition(false)
+          m_totalProjectFrames(0), m_lastReportedProgress(-1), m_enableAudioTransition(false),
+          m_reusableMixFrameCapacity(0)
     {
     }
 
@@ -78,6 +80,13 @@ namespace VideoCreator
         m_audioSamplesCount = 0;
         m_progress = 0;
         m_lastReportedProgress = -1;
+        m_sceneFirstFrames.clear();
+        m_sceneLastFrames.clear();
+        m_mixBufferLeft.clear();
+        m_mixBufferRight.clear();
+        m_reusableMixFrame.reset();
+        m_reusableMixFrameCapacity = 0;
+
 
 
         // 计算总帧数用于进度报告（scene.duration 已在 ConfigLoader 中同步到真实时长）
@@ -273,8 +282,7 @@ namespace VideoCreator
         struct SceneAudioLayer
         {
             std::unique_ptr<AudioDecoder> decoder;
-            std::vector<float> channels[2];
-            size_t readPos = 0;
+            std::deque<float> channels[2];
             bool exhausted = false;
             int64_t delaySamples = 0;
         };
@@ -382,21 +390,10 @@ namespace VideoCreator
             if (!m_audioStream || requiredSamples <= 0) {
                 return true;
             }
-            auto audioFrame = FFmpegUtils::createAvFrame();
-            audioFrame->nb_samples = requiredSamples;
-            audioFrame->ch_layout = m_audioCodecContext->ch_layout;
-            audioFrame->format = m_audioCodecContext->sample_fmt;
-            audioFrame->sample_rate = m_audioCodecContext->sample_rate;
-            int ret = av_frame_get_buffer(audioFrame.get(), 0);
-            if (ret < 0) {
-                m_errorString = format_ffmpeg_error(ret, "Failed to allocate silence frame buffer");
+            if (!ensureReusableAudioFrame(requiredSamples)) {
                 return false;
             }
-            ret = av_frame_make_writable(audioFrame.get());
-            if (ret < 0) {
-                m_errorString = format_ffmpeg_error(ret, "Failed to make silence frame writable");
-                return false;
-            }
+            AVFrame *audioFrame = m_reusableMixFrame.get();
             av_samples_set_silence(audioFrame->data, 0, audioFrame->nb_samples, audioFrame->ch_layout.nb_channels, (AVSampleFormat)audioFrame->format);
             if (av_audio_fifo_write(m_audioFifo, (void **)audioFrame->data, audioFrame->nb_samples) < audioFrame->nb_samples) {
                 m_errorString = "Failed to enqueue silence frame into FIFO";
@@ -405,22 +402,8 @@ namespace VideoCreator
             return true;
         };
 
-        auto compactLayerBuffer = [](SceneAudioLayer &layer) {
-            const size_t threshold = 8192;
-            if (layer.readPos >= threshold) {
-                for (auto &channel : layer.channels) {
-                    if (layer.readPos < channel.size()) {
-                        channel.erase(channel.begin(), channel.begin() + static_cast<long long>(layer.readPos));
-                    } else {
-                        channel.clear();
-                    }
-                }
-                layer.readPos = 0;
-            }
-        };
-
         auto ensureLayerSamples = [&](SceneAudioLayer &layer, int neededSamples) -> bool {
-            while (!layer.exhausted && static_cast<int>(layer.channels[0].size() - layer.readPos) < neededSamples) {
+            while (!layer.exhausted && static_cast<int>(layer.channels[0].size()) < neededSamples) {
                 FFmpegUtils::AvFramePtr frame;
                 int decodeResult = layer.decoder->decodeFrame(frame);
                 if (decodeResult > 0 && frame) {
@@ -431,7 +414,8 @@ namespace VideoCreator
                         layer.channels[ch].insert(layer.channels[ch].end(), data, data + frame->nb_samples);
                     }
                     if (channelCount == 1) {
-                        layer.channels[1].insert(layer.channels[1].end(), layer.channels[0].end() - frame->nb_samples, layer.channels[0].end());
+                        auto copyBegin = layer.channels[0].end() - frame->nb_samples;
+                        layer.channels[1].insert(layer.channels[1].end(), copyBegin, layer.channels[0].end());
                     }
                     size_t maxSamples = std::max(layer.channels[0].size(), layer.channels[1].size());
                     layer.channels[0].resize(maxSamples, 0.0f);
@@ -458,8 +442,8 @@ namespace VideoCreator
                 return enqueueSilenceFrame(samplesNeeded);
             }
 
-            std::vector<float> mixLeft(samplesNeeded, 0.0f);
-            std::vector<float> mixRight(samplesNeeded, 0.0f);
+            m_mixBufferLeft.assign(samplesNeeded, 0.0f);
+            m_mixBufferRight.assign(samplesNeeded, 0.0f);
             bool hasActiveLayer = false;
             bool hasPendingAudio = false;
 
@@ -485,51 +469,40 @@ namespace VideoCreator
                     }
                 }
 
-                size_t available = layer.channels[0].size() > layer.readPos ? layer.channels[0].size() - layer.readPos : 0;
-                const int samplesToConsume = static_cast<int>(std::min<size_t>(available, requiredSamples));
+                const int available = static_cast<int>(layer.channels[0].size());
+                const int samplesToConsume = std::min(requiredSamples, available);
                 if (samplesToConsume > 0) {
                     hasActiveLayer = true;
                     for (int i = 0; i < samplesToConsume; ++i) {
                         const int dstIndex = silentSamples + i;
-                        mixLeft[dstIndex] += layer.channels[0][layer.readPos + i];
-                        mixRight[dstIndex] += layer.channels[1][layer.readPos + i];
+                        m_mixBufferLeft[dstIndex] += layer.channels[0].front();
+                        layer.channels[0].pop_front();
+                        m_mixBufferRight[dstIndex] += layer.channels[1].front();
+                        layer.channels[1].pop_front();
                     }
-                    layer.readPos += samplesToConsume;
                 }
 
-                if (!layer.exhausted) {
+                if (!layer.exhausted && (!layer.channels[0].empty() || !layer.channels[1].empty())) {
                     hasPendingAudio = true;
                 }
-
-                compactLayerBuffer(layer);
             }
 
             if (!hasActiveLayer && !hasPendingAudio) {
                 return enqueueSilenceFrame(samplesNeeded);
             }
 
-            auto mixedFrame = FFmpegUtils::createAvFrame();
-            mixedFrame->nb_samples = samplesNeeded;
-            mixedFrame->ch_layout = m_audioCodecContext->ch_layout;
-            mixedFrame->format = m_audioCodecContext->sample_fmt;
-            mixedFrame->sample_rate = m_audioCodecContext->sample_rate;
-            int ret = av_frame_get_buffer(mixedFrame.get(), 0);
-            if (ret < 0) {
-                m_errorString = format_ffmpeg_error(ret, "Failed to allocate mixed audio buffer");
+            if (!ensureReusableAudioFrame(samplesNeeded)) {
                 return false;
             }
 
+            AVFrame *mixedFrame = m_reusableMixFrame.get();
             const int outputChannels = m_audioCodecContext->ch_layout.nb_channels > 0 ? m_audioCodecContext->ch_layout.nb_channels : 2;
             for (int ch = 0; ch < outputChannels && ch < 2; ++ch) {
                 float *dst = reinterpret_cast<float *>(mixedFrame->data[ch]);
-                const auto &source = (ch == 0) ? mixLeft : mixRight;
+                const auto &source = (ch == 0) ? m_mixBufferLeft : m_mixBufferRight;
                 for (int i = 0; i < samplesNeeded; ++i) {
                     float value = source[i];
-                    if (value > 1.0f) {
-                        value = 1.0f;
-                    } else if (value < -1.0f) {
-                        value = -1.0f;
-                    }
+                    value = std::clamp(value, -1.0f, 1.0f);
                     dst[i] = value;
                 }
             }
@@ -538,10 +511,8 @@ namespace VideoCreator
                 m_errorString = "Failed to write mixed audio to FIFO";
                 return false;
             }
-
             return true;
         };
-
 
         if ((!isVideoScene || !videoSourceAvailable || sceneDuration <= 0) && !sceneAudioLayers.empty() && longestAudioDuration > 0)
         {
@@ -582,6 +553,7 @@ namespace VideoCreator
     
         int startFrameCount = m_frameCount;
         bool videoEOF = false;
+        FFmpegUtils::AvFramePtr lastFrameCopy;
 
         while (m_frameCount < startFrameCount + totalVideoFramesInScene)
         {
@@ -625,6 +597,8 @@ namespace VideoCreator
                     return false;
                 }
 
+                cacheSceneFirstFrame(scene, videoFrame.get());
+                lastFrameCopy = FFmpegUtils::copyAvFrame(videoFrame.get());
                 videoFrame->pts = m_frameCount;
                 int ret = avcodec_send_frame(m_videoCodecContext.get(), videoFrame.get());
                 if (ret < 0) {
@@ -664,6 +638,9 @@ namespace VideoCreator
                 }
             }
         }
+        if (lastFrameCopy) {
+            storeSceneFrame(m_sceneLastFrames, scene, std::move(lastFrameCopy));
+        }
         return true;
     }
 
@@ -682,7 +659,11 @@ namespace VideoCreator
 
         // --- Determine the correct FROM frame ---
         FFmpegUtils::AvFramePtr finalFromFrame;
-        if (fromScene.type == SceneType::VIDEO_SCENE) {
+        auto cachedFromFrame = getCachedSceneFrame(fromScene, true);
+        bool fromFrameFromCache = static_cast<bool>(cachedFromFrame);
+        if (cachedFromFrame) {
+            finalFromFrame = std::move(cachedFromFrame);
+        } else if (fromScene.type == SceneType::VIDEO_SCENE) {
             finalFromFrame = extractVideoSceneFrame(fromScene, true);
             if (!finalFromFrame) {
                 return false;
@@ -758,6 +739,9 @@ namespace VideoCreator
             finalFromFrame = fromDecoder.scaleToSize(fromFrame, m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P);
         }
         
+        if (!fromFrameFromCache && finalFromFrame) {
+            cacheSceneLastFrame(fromScene, finalFromFrame.get());
+        }
         if (!finalFromFrame) {
             m_errorString = "未能确定转场的起始帧";
             return false;
@@ -765,7 +749,11 @@ namespace VideoCreator
 
         // --- Determine the correct TO frame (prefer特效首帧) ---
         FFmpegUtils::AvFramePtr scaledToFrame;
-        if (toScene.type == SceneType::VIDEO_SCENE) {
+        auto cachedToFrame = getCachedSceneFrame(toScene, false);
+        bool toFrameFromCache = static_cast<bool>(cachedToFrame);
+        if (cachedToFrame) {
+            scaledToFrame = std::move(cachedToFrame);
+        } else if (toScene.type == SceneType::VIDEO_SCENE) {
             scaledToFrame = extractVideoSceneFrame(toScene, false);
             if (!scaledToFrame) {
                 return false;
@@ -837,6 +825,9 @@ namespace VideoCreator
             }
         }
 
+        if (!toFrameFromCache && scaledToFrame) {
+            cacheSceneFirstFrame(toScene, scaledToFrame.get());
+        }
         // --- Apply transition ---
         EffectProcessor transitionProcessor;
         transitionProcessor.initialize(m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P, m_config.project.fps);
@@ -1118,6 +1109,78 @@ namespace VideoCreator
 
         return selectedFrame;
     }
+
+    bool RenderEngine::ensureReusableAudioFrame(int samplesNeeded)
+    {
+        if (!m_audioCodecContext) {
+            return false;
+        }
+
+        bool allocateNew = !m_reusableMixFrame || samplesNeeded > m_reusableMixFrameCapacity;
+        if (allocateNew) {
+            m_reusableMixFrame = FFmpegUtils::createAvFrame();
+            if (!m_reusableMixFrame) {
+                m_errorString = "Failed to allocate reusable audio frame";
+                m_reusableMixFrameCapacity = 0;
+                return false;
+            }
+            m_reusableMixFrame->ch_layout = m_audioCodecContext->ch_layout;
+            m_reusableMixFrame->format = m_audioCodecContext->sample_fmt;
+            m_reusableMixFrame->sample_rate = m_audioCodecContext->sample_rate;
+            m_reusableMixFrameCapacity = samplesNeeded;
+        }
+
+        m_reusableMixFrame->nb_samples = samplesNeeded;
+        int ret = allocateNew ? av_frame_get_buffer(m_reusableMixFrame.get(), 0) : av_frame_make_writable(m_reusableMixFrame.get());
+        if (ret < 0) {
+            m_errorString = format_ffmpeg_error(ret, "Failed to prepare reusable audio frame");
+            if (allocateNew) {
+                m_reusableMixFrame.reset();
+                m_reusableMixFrameCapacity = 0;
+            }
+            return false;
+        }
+        return true;
+    }
+
+
+    void RenderEngine::storeSceneFrame(std::unordered_map<int, FFmpegUtils::AvFramePtr> &cache, const SceneConfig &scene, FFmpegUtils::AvFramePtr frame)
+    {
+        if (!frame) {
+            return;
+        }
+        cache[scene.id] = std::move(frame);
+    }
+
+    void RenderEngine::cacheSceneFirstFrame(const SceneConfig &scene, const AVFrame *frame)
+    {
+        if (!frame) {
+            return;
+        }
+        if (m_sceneFirstFrames.find(scene.id) != m_sceneFirstFrames.end()) {
+            return;
+        }
+        storeSceneFrame(m_sceneFirstFrames, scene, FFmpegUtils::copyAvFrame(frame));
+    }
+
+    void RenderEngine::cacheSceneLastFrame(const SceneConfig &scene, const AVFrame *frame)
+    {
+        if (!frame) {
+            return;
+        }
+        storeSceneFrame(m_sceneLastFrames, scene, FFmpegUtils::copyAvFrame(frame));
+    }
+
+    FFmpegUtils::AvFramePtr RenderEngine::getCachedSceneFrame(const SceneConfig &scene, bool lastFrame)
+    {
+        auto &cache = lastFrame ? m_sceneLastFrames : m_sceneFirstFrames;
+        auto it = cache.find(scene.id);
+        if (it != cache.end() && it->second) {
+            return FFmpegUtils::copyAvFrame(it->second.get());
+        }
+        return nullptr;
+    }
+
 
     FFmpegUtils::AvFramePtr RenderEngine::generateTestFrame(int frameIndex, int width, int height)
     {

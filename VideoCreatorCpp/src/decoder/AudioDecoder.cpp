@@ -241,125 +241,130 @@ namespace VideoCreator
         return av_seek_frame(m_formatContext, m_audioStreamIndex, target_ts, AVSEEK_FLAG_BACKWARD) >= 0;
     }
     
-    int AudioDecoder::decodeFrame(FFmpegUtils::AvFramePtr &outFrame) {
+    int AudioDecoder::decodeFrame(FFmpegUtils::AvFramePtr &outFrame)
+    {
         if (!m_formatContext || !m_codecContext) {
-            m_errorString = "解码器未打开";
+            m_errorString = "Decoder not opened";
             return -1;
         }
 
-        if (m_effectsEnabled) {
-            // 如果启用了效果，从filter graph获取帧
-            auto filtered_frame = FFmpegUtils::createAvFrame();
-            int ret = av_buffersink_get_frame(m_bufferSinkCtx, filtered_frame.get());
-            if (ret == 0) {
-                outFrame = std::move(filtered_frame);
-                return 1;
-            }
-            if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF) {
-                m_errorString = "从filter graph获取帧失败";
-                return -1;
-            }
-            // 如果是 EAGAIN 或 EOF, 我们需要向下游发送更多数据
-        }
-    
         auto packet = FFmpegUtils::createAvPacket();
-        auto raw_frame = FFmpegUtils::createAvFrame();
-        int response;
-    
+        auto rawFrame = FFmpegUtils::createAvFrame();
+        if (!packet || !rawFrame) {
+            m_errorString = "Failed to allocate decoder resources";
+            return -1;
+        }
+
+        bool decoderDrained = false;
+
         while (true) {
-            response = avcodec_receive_frame(m_codecContext, raw_frame.get());
-            if (response >= 0) {
-                break; // 成功获取一个原始帧
-            }
-    
-            if (response == AVERROR_EOF) {
-                if (m_effectsEnabled) {
-                    int add_frame_ret = av_buffersrc_add_frame(m_bufferSrcCtx, nullptr); // 发送EOF到filter graph
-                    if (add_frame_ret < 0) {
-                        m_errorString = "发送EOF到filter graph失败";
-                        return -1; // Indicate error
-                    }
-                    auto filtered_frame = FFmpegUtils::createAvFrame();
-                    int ret = av_buffersink_get_frame(m_bufferSinkCtx, filtered_frame.get());
-                    if (ret == 0) {
-                        outFrame = std::move(filtered_frame);
-                        return 1;
-                    }
+            if (m_effectsEnabled) {
+                auto filteredFrame = FFmpegUtils::createAvFrame();
+                if (!filteredFrame) {
+                    m_errorString = "Failed to allocate filtered frame";
+                    return -1;
                 }
-                m_errorString = "解码器已完全刷新";
-                return 0; // 文件结束
-            }
-    
-            if (response != AVERROR(EAGAIN)) {
-                m_errorString = "从解码器接收帧时发生错误";
-                return -1;
-            }
-    
-            // 需要更多数据包
-            response = av_read_frame(m_formatContext, packet.get());
-            if (response < 0) {
-                avcodec_send_packet(m_codecContext, nullptr); // Flush解码器
-                continue;
-            }
-    
-            if (packet->stream_index == m_audioStreamIndex) {
-                if (avcodec_send_packet(m_codecContext, packet.get()) < 0) {
-                    m_errorString = "发送数据包到解码器失败";
-                    av_packet_unref(packet.get());
+                int ret = av_buffersink_get_frame(m_bufferSinkCtx, filteredFrame.get());
+                if (ret == 0) {
+                    outFrame = std::move(filteredFrame);
+                    return 1;
+                }
+                if (ret == AVERROR_EOF && decoderDrained) {
+                    return 0;
+                }
+                if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF) {
+                    m_errorString = "Failed to pull frame from filter graph";
                     return -1;
                 }
             }
-            av_packet_unref(packet.get());
-        }
-    
-        // 重采样
-        auto resampled_frame = FFmpegUtils::createAvFrame();
-        AVChannelLayout out_ch_layout;
-        int64_t out_sample_rate;
-        AVSampleFormat out_sample_fmt;
-        av_opt_get_chlayout(m_swrCtx, "out_chlayout", 0, &out_ch_layout);
-        av_opt_get_int(m_swrCtx, "out_sample_rate", 0, &out_sample_rate);
-        av_opt_get_sample_fmt(m_swrCtx, "out_sample_fmt", 0, &out_sample_fmt);
 
-        resampled_frame->nb_samples = static_cast<int>(av_rescale_rnd(swr_get_delay(m_swrCtx, raw_frame->sample_rate) + raw_frame->nb_samples, out_sample_rate, raw_frame->sample_rate, AV_ROUND_UP));
-        resampled_frame->ch_layout = out_ch_layout;
-        resampled_frame->format = out_sample_fmt;
-        resampled_frame->sample_rate = static_cast<int>(out_sample_rate);    
-        
-        if (av_frame_get_buffer(resampled_frame.get(), 0) < 0) {
-            m_errorString = "为重采样后的音频帧分配缓冲区失败";
-            av_channel_layout_uninit(&out_ch_layout);
-            return -1;
-        }
-    
-        int converted_samples = swr_convert(m_swrCtx, resampled_frame->data, resampled_frame->nb_samples, (const uint8_t **)raw_frame->data, raw_frame->nb_samples);
-        av_channel_layout_uninit(&out_ch_layout);
-        
-        if (converted_samples < 0) {
-            m_errorString = "swr_convert 转换失败";
-            return -1;
-        }
-        resampled_frame->nb_samples = converted_samples;
-
-        if (raw_frame->pts != AV_NOPTS_VALUE) {
-            resampled_frame->pts = av_rescale_q(raw_frame->pts, m_formatContext->streams[m_audioStreamIndex]->time_base, AVRational{1, static_cast<int>(out_sample_rate)});
-        }
-    
-        if (m_effectsEnabled) {
-            // 将重采样后的帧发送到 filter graph
-            if (av_buffersrc_add_frame(m_bufferSrcCtx, resampled_frame.get()) < 0) {
-                m_errorString = "发送帧到 filter graph 失败";
+            int ret = avcodec_receive_frame(m_codecContext, rawFrame.get());
+            if (ret == AVERROR_EOF) {
+                decoderDrained = true;
+                if (m_effectsEnabled) {
+                    if (av_buffersrc_add_frame(m_bufferSrcCtx, nullptr) < 0) {
+                        m_errorString = "Failed to signal EOF to filter graph";
+                        return -1;
+                    }
+                    continue;
+                }
+                return 0;
+            }
+            if (ret == AVERROR(EAGAIN)) {
+                ret = av_read_frame(m_formatContext, packet.get());
+                if (ret >= 0) {
+                    if (packet->stream_index == m_audioStreamIndex) {
+                        if (avcodec_send_packet(m_codecContext, packet.get()) < 0) {
+                            m_errorString = "Failed to send packet to decoder";
+                            return -1;
+                        }
+                    }
+                    av_packet_unref(packet.get());
+                    continue;
+                }
+                if (ret == AVERROR_EOF) {
+                    avcodec_send_packet(m_codecContext, nullptr);
+                    continue;
+                }
+                char errbuf[AV_ERROR_MAX_STRING_SIZE];
+                av_strerror(ret, errbuf, sizeof(errbuf));
+                m_errorString = std::string("Failed to read audio data: ") + errbuf;
                 return -1;
             }
-            // 再次尝试从 sink 获取处理过的帧
-            return decodeFrame(outFrame);
-        } else {
-            // 未启用效果，直接返回重采样后的帧
-            outFrame = std::move(resampled_frame);
-            return 1;
+            if (ret < 0) {
+                m_errorString = "Failed to receive frame from decoder";
+                return -1;
+            }
+
+            auto resampled_frame = FFmpegUtils::createAvFrame();
+            if (!resampled_frame) {
+                m_errorString = "Failed to allocate resampled frame";
+                return -1;
+            }
+
+            AVChannelLayout out_ch_layout;
+            int64_t out_sample_rate;
+            AVSampleFormat out_sample_fmt;
+            av_opt_get_chlayout(m_swrCtx, "out_chlayout", 0, &out_ch_layout);
+            av_opt_get_int(m_swrCtx, "out_sample_rate", 0, &out_sample_rate);
+            av_opt_get_sample_fmt(m_swrCtx, "out_sample_fmt", 0, &out_sample_fmt);
+
+            resampled_frame->nb_samples = static_cast<int>(av_rescale_rnd(swr_get_delay(m_swrCtx, rawFrame->sample_rate) + rawFrame->nb_samples, out_sample_rate, rawFrame->sample_rate, AV_ROUND_UP));
+            resampled_frame->ch_layout = out_ch_layout;
+            resampled_frame->format = out_sample_fmt;
+            resampled_frame->sample_rate = static_cast<int>(out_sample_rate);
+
+            if (av_frame_get_buffer(resampled_frame.get(), 0) < 0) {
+                av_channel_layout_uninit(&out_ch_layout);
+                m_errorString = "Failed to allocate buffer for resampled audio";
+                return -1;
+            }
+
+            int converted_samples = swr_convert(m_swrCtx, resampled_frame->data, resampled_frame->nb_samples, (const uint8_t **)rawFrame->data, rawFrame->nb_samples);
+            av_channel_layout_uninit(&out_ch_layout);
+            if (converted_samples < 0) {
+                m_errorString = "swr_convert failed";
+                return -1;
+            }
+            resampled_frame->nb_samples = converted_samples;
+
+            if (rawFrame->pts != AV_NOPTS_VALUE) {
+                resampled_frame->pts = av_rescale_q(rawFrame->pts, m_formatContext->streams[m_audioStreamIndex]->time_base, AVRational{1, static_cast<int>(out_sample_rate)});
+            }
+
+            if (m_effectsEnabled) {
+                if (av_buffersrc_add_frame(m_bufferSrcCtx, resampled_frame.get()) < 0) {
+                    m_errorString = "Failed to send frame to filter graph";
+                    return -1;
+                }
+                continue;
+            } else {
+                outFrame = std::move(resampled_frame);
+                return 1;
+            }
         }
     }
-    
+
     double AudioDecoder::getDuration() const
     {
         if (!m_formatContext || m_audioStreamIndex < 0) {

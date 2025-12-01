@@ -3,6 +3,8 @@
 
 #include <string>
 #include <memory>
+#include <vector>
+#include <unordered_map>
 #include "model/ProjectConfig.h"
 #include "ffmpeg_utils/FFmpegHeaders.h"
 #include "ffmpeg_utils/AvFrameWrapper.h"
@@ -57,6 +59,11 @@ namespace VideoCreator
 
         // 从视频场景提取指定帧（首帧或末帧）并缩放到项目分辨率
         FFmpegUtils::AvFramePtr extractVideoSceneFrame(const SceneConfig &scene, bool fetchLastFrame);
+        void cacheSceneFirstFrame(const SceneConfig &scene, const AVFrame *frame);
+        void cacheSceneLastFrame(const SceneConfig &scene, const AVFrame *frame);
+        FFmpegUtils::AvFramePtr getCachedSceneFrame(const SceneConfig &scene, bool lastFrame);
+        bool ensureReusableAudioFrame(int samplesNeeded);
+        void storeSceneFrame(std::unordered_map<int, FFmpegUtils::AvFramePtr> &cache, const SceneConfig &scene, FFmpegUtils::AvFramePtr frame);
 
         // 生成测试帧 (用于演示)
         FFmpegUtils::AvFramePtr generateTestFrame(int frameIndex, int width, int height);
@@ -85,6 +92,12 @@ namespace VideoCreator
 
         // 是否启用音频转场效果（默认关闭，保留实现以便未来开启）
         bool m_enableAudioTransition;
+        std::unordered_map<int, FFmpegUtils::AvFramePtr> m_sceneFirstFrames;
+        std::unordered_map<int, FFmpegUtils::AvFramePtr> m_sceneLastFrames;
+        std::vector<float> m_mixBufferLeft;
+        std::vector<float> m_mixBufferRight;
+        FFmpegUtils::AvFramePtr m_reusableMixFrame;
+        int m_reusableMixFrameCapacity;
     };
 
 } // namespace VideoCreator

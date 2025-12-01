@@ -6,6 +6,9 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QFile>
+#include <QFileInfo>
+#include <QDir>
+#include <unordered_map>
 #include "ProjectConfig.h"
 
 namespace VideoCreator
@@ -27,6 +30,8 @@ namespace VideoCreator
 
     private:
         QString m_errorString;
+        std::unordered_map<std::string, double> m_audioDurationCache;
+        std::unordered_map<std::string, double> m_videoDurationCache;
 
         // 解析项目配置
         bool parseProjectConfig(const QJsonObject &json, ProjectInfoConfig &project);
@@ -69,6 +74,9 @@ namespace VideoCreator
         // 获取音频文件时长（秒）
         double getAudioDuration(const std::string &audioPath);
         double getVideoDuration(const std::string &videoPath);
+        double probeAudioDuration(const std::string &normalizedPath);
+        double probeVideoDuration(const std::string &normalizedPath);
+        std::string normalizedPath(const std::string &path) const;
 
         // 字符串到枚举转换
         SceneType stringToSceneType(const QString &typeStr);

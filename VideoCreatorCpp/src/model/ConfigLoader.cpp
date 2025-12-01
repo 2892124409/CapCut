@@ -28,6 +28,9 @@ namespace VideoCreator
 
     bool ConfigLoader::loadFromString(const QString &jsonString, ProjectConfig &config)
     {
+        m_audioDurationCache.clear();
+        m_videoDurationCache.clear();
+
         QJsonParseError parseError;
         QJsonDocument doc = QJsonDocument::fromJson(jsonString.toUtf8(), &parseError);
 
@@ -595,50 +598,81 @@ namespace VideoCreator
 
     double ConfigLoader::getAudioDuration(const std::string &audioPath)
     {
-        // 检查路径是否为空
+        const std::string key = normalizedPath(audioPath);
+        if (key.empty())
+        {
+            qDebug() << "Audio path is empty";
+            return -1.0;
+        }
+
+        auto cachedIt = m_audioDurationCache.find(key);
+        if (cachedIt != m_audioDurationCache.end())
+        {
+            return cachedIt->second;
+        }
+
+        double duration = probeAudioDuration(key);
+        m_audioDurationCache[key] = duration;
+        return duration;
+    }
+
+    double ConfigLoader::getVideoDuration(const std::string &videoPath)
+    {
+        const std::string key = normalizedPath(videoPath);
+        if (key.empty())
+        {
+            qDebug() << "Video path is empty";
+            return -1.0;
+        }
+
+        auto cachedIt = m_videoDurationCache.find(key);
+        if (cachedIt != m_videoDurationCache.end())
+        {
+            return cachedIt->second;
+        }
+
+        double duration = probeVideoDuration(key);
+        m_videoDurationCache[key] = duration;
+        return duration;
+    }
+
+    double ConfigLoader::probeAudioDuration(const std::string &audioPath)
+    {
         if (audioPath.empty())
         {
-            qDebug() << "音频路径为空";
             return -1.0;
         }
 
-        // 检查文件是否存在
-        QFile file(QString::fromStdString(audioPath));
+        QFileInfo info(QString::fromStdString(audioPath));
+        QFile file(info.absoluteFilePath());
         if (!file.exists())
         {
-            qDebug() << "音频文件不存在:" << QString::fromStdString(audioPath);
+            qDebug() << "Audio file not found:" << info.absoluteFilePath();
             return -1.0;
         }
-
-        // 在新版本FFmpeg中，不需要调用av_register_all()
-        // FFmpeg库会自动初始化
 
         AVFormatContext *formatCtx = nullptr;
         int ret = avformat_open_input(&formatCtx, audioPath.c_str(), nullptr, nullptr);
-
         if (ret < 0)
         {
-            // 获取详细的错误信息
             char errbuf[256];
             av_strerror(ret, errbuf, sizeof(errbuf));
-            qDebug() << "无法打开音频文件:" << QString::fromStdString(audioPath);
-            qDebug() << "错误码:" << ret << "错误信息:" << errbuf;
+            qDebug() << "Failed to open audio file:" << info.absoluteFilePath();
+            qDebug() << "FFmpeg error:" << errbuf;
             return -1.0;
         }
 
-        // 获取流信息
         ret = avformat_find_stream_info(formatCtx, nullptr);
         if (ret < 0)
         {
             char errbuf[256];
             av_strerror(ret, errbuf, sizeof(errbuf));
-            qDebug() << "无法获取音频流信息:" << QString::fromStdString(audioPath);
-            qDebug() << "错误码:" << ret << "错误信息:" << errbuf;
+            qDebug() << "Failed to read audio stream info:" << info.absoluteFilePath();
+            qDebug() << "FFmpeg error:" << errbuf;
             avformat_close_input(&formatCtx);
             return -1.0;
         }
 
-        // 查找音频流
         int audioStreamIndex = -1;
         for (unsigned int i = 0; i < formatCtx->nb_streams; i++)
         {
@@ -651,12 +685,11 @@ namespace VideoCreator
 
         if (audioStreamIndex == -1)
         {
-            qDebug() << "未找到音频流:" << QString::fromStdString(audioPath);
+            qDebug() << "No audio stream in file:" << info.absoluteFilePath();
             avformat_close_input(&formatCtx);
             return -1.0;
         }
 
-        // 获取音频时长（秒）
         double duration = 0.0;
         if (formatCtx->duration != AV_NOPTS_VALUE)
         {
@@ -669,40 +702,32 @@ namespace VideoCreator
         }
 
         avformat_close_input(&formatCtx);
-
-        if (duration > 0)
-        {
-            qDebug() << "音频时长:" << duration << "秒" << "文件:" << QString::fromStdString(audioPath);
-            return duration;
-        }
-
-        return -1.0;
+        return duration > 0 ? duration : -1.0;
     }
 
-    double ConfigLoader::getVideoDuration(const std::string &videoPath)
+    double ConfigLoader::probeVideoDuration(const std::string &videoPath)
     {
         if (videoPath.empty())
         {
-            qDebug() << "视频路径为空";
             return -1.0;
         }
 
-        QFile file(QString::fromStdString(videoPath));
+        QFileInfo info(QString::fromStdString(videoPath));
+        QFile file(info.absoluteFilePath());
         if (!file.exists())
         {
-            qDebug() << "视频文件不存在:" << QString::fromStdString(videoPath);
+            qDebug() << "Video file not found:" << info.absoluteFilePath();
             return -1.0;
         }
 
         AVFormatContext *formatCtx = nullptr;
         int ret = avformat_open_input(&formatCtx, videoPath.c_str(), nullptr, nullptr);
-
         if (ret < 0)
         {
             char errbuf[256];
             av_strerror(ret, errbuf, sizeof(errbuf));
-            qDebug() << "无法打开视频文件:" << QString::fromStdString(videoPath);
-            qDebug() << "错误码:" << ret << "错误信息:" << errbuf;
+            qDebug() << "Failed to open video file:" << info.absoluteFilePath();
+            qDebug() << "FFmpeg error:" << errbuf;
             return -1.0;
         }
 
@@ -711,8 +736,8 @@ namespace VideoCreator
         {
             char errbuf[256];
             av_strerror(ret, errbuf, sizeof(errbuf));
-            qDebug() << "无法获取视频流信息:" << QString::fromStdString(videoPath);
-            qDebug() << "错误码:" << ret << "错误信息:" << errbuf;
+            qDebug() << "Failed to read video stream info:" << info.absoluteFilePath();
+            qDebug() << "FFmpeg error:" << errbuf;
             avformat_close_input(&formatCtx);
             return -1.0;
         }
@@ -729,7 +754,7 @@ namespace VideoCreator
 
         if (videoStreamIndex == -1)
         {
-            qDebug() << "未找到视频流:" << QString::fromStdString(videoPath);
+            qDebug() << "No video stream in file:" << info.absoluteFilePath();
             avformat_close_input(&formatCtx);
             return -1.0;
         }
@@ -746,14 +771,19 @@ namespace VideoCreator
         }
 
         avformat_close_input(&formatCtx);
+        return duration > 0 ? duration : -1.0;
+    }
 
-        if (duration > 0)
+    std::string ConfigLoader::normalizedPath(const std::string &path) const
+    {
+        if (path.empty())
         {
-            qDebug() << "视频时长:" << duration << "秒" << "文件:" << QString::fromStdString(videoPath);
-            return duration;
+            return std::string();
         }
 
-        return -1.0;
+        QFileInfo info(QString::fromStdString(path));
+        QString normalized = QDir::fromNativeSeparators(QDir::cleanPath(info.absoluteFilePath()));
+        return normalized.toStdString();
     }
 
 } // namespace VideoCreator
