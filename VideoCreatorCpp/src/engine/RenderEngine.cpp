@@ -10,6 +10,8 @@
 #include <deque>
 #include <algorithm>
 #include <cmath>
+#include <thread>
+#include <future>
 
 namespace VideoCreator
 {
@@ -86,6 +88,7 @@ namespace VideoCreator
         m_mixBufferRight.clear();
         m_reusableMixFrame.reset();
         m_reusableMixFrameCapacity = 0;
+        scheduleVideoPrefetchTasks();
 
 
 
@@ -159,6 +162,7 @@ namespace VideoCreator
             m_lastReportedProgress = m_progress;
         }
 
+        m_sceneFirstFramePrefetch.clear();
         return true;
     }
 
@@ -211,6 +215,12 @@ namespace VideoCreator
         std::string bitrateStr = m_config.global_effects.video_encoding.bitrate;
         m_videoCodecContext->bit_rate = parseBitrate(bitrateStr);
         m_videoCodecContext->gop_size = 12;
+        unsigned int hardwareThreads = std::thread::hardware_concurrency();
+        if (hardwareThreads == 0) {
+            hardwareThreads = 4;
+        }
+        m_videoCodecContext->thread_count = static_cast<int>(std::min(8u, hardwareThreads));
+        m_videoCodecContext->thread_type = FF_THREAD_FRAME;
 
         av_opt_set(m_videoCodecContext->priv_data, "preset", m_config.global_effects.video_encoding.preset.c_str(), 0);
         av_opt_set_int(m_videoCodecContext->priv_data, "crf", m_config.global_effects.video_encoding.crf, 0);
@@ -257,6 +267,11 @@ namespace VideoCreator
         m_audioCodecContext->sample_rate = 44100;
         av_channel_layout_from_mask(&m_audioCodecContext->ch_layout, AV_CH_LAYOUT_STEREO);
         m_audioCodecContext->time_base = {1, m_audioCodecContext->sample_rate};
+        unsigned int audioThreads = std::thread::hardware_concurrency();
+        if (audioThreads == 0) {
+            audioThreads = 2;
+        }
+        m_audioCodecContext->thread_count = static_cast<int>(std::min(4u, audioThreads));
 
         int ret = avcodec_open2(m_audioCodecContext.get(), audioCodec, nullptr);
         if (ret < 0) {
@@ -288,6 +303,9 @@ namespace VideoCreator
         };
 
         const bool isVideoScene = scene.type == SceneType::VIDEO_SCENE;
+        if (isVideoScene) {
+            resolveScenePrefetch(scene);
+        }
 
         ImageDecoder imageDecoder;
         if (!isVideoScene && !scene.resources.image.path.empty() && !imageDecoder.open(scene.resources.image.path)) {
@@ -1110,6 +1128,55 @@ namespace VideoCreator
         return selectedFrame;
     }
 
+    void RenderEngine::scheduleVideoPrefetchTasks()
+    {
+        m_sceneFirstFramePrefetch.clear();
+        const int targetWidth = m_config.project.width;
+        const int targetHeight = m_config.project.height;
+        for (const auto &scene : m_config.scenes) {
+            if (scene.type != SceneType::VIDEO_SCENE) {
+                continue;
+            }
+            if (scene.resources.video.path.empty()) {
+                continue;
+            }
+            m_sceneFirstFramePrefetch.emplace(scene.id, std::async(std::launch::async, [scene, targetWidth, targetHeight]() {
+                VideoDecoder decoder;
+                if (!decoder.open(scene.resources.video.path)) {
+                    qDebug() << "???????:" << QString::fromStdString(scene.resources.video.path)
+                             << decoder.getErrorString().c_str();
+                    return FFmpegUtils::AvFramePtr{};
+                }
+                while (true) {
+                    FFmpegUtils::AvFramePtr decodedFrame;
+                    int ret = decoder.decodeFrame(decodedFrame);
+                    if (ret <= 0) {
+                        return FFmpegUtils::AvFramePtr{};
+                    }
+                    auto scaled = decoder.scaleFrame(decodedFrame.get(), targetWidth, targetHeight, AV_PIX_FMT_YUV420P);
+                    if (!scaled) {
+                        qDebug() << "?????????:" << decoder.getErrorString().c_str();
+                        return FFmpegUtils::AvFramePtr{};
+                    }
+                    return scaled;
+                }
+            }));
+        }
+    }
+
+    void RenderEngine::resolveScenePrefetch(const SceneConfig &scene)
+    {
+        auto it = m_sceneFirstFramePrefetch.find(scene.id);
+        if (it == m_sceneFirstFramePrefetch.end()) {
+            return;
+        }
+        FFmpegUtils::AvFramePtr frame = it->second.get();
+        m_sceneFirstFramePrefetch.erase(it);
+        if (frame) {
+            storeSceneFrame(m_sceneFirstFrames, scene, std::move(frame));
+        }
+    }
+
     bool RenderEngine::ensureReusableAudioFrame(int samplesNeeded)
     {
         if (!m_audioCodecContext) {
@@ -1173,6 +1240,9 @@ namespace VideoCreator
 
     FFmpegUtils::AvFramePtr RenderEngine::getCachedSceneFrame(const SceneConfig &scene, bool lastFrame)
     {
+        if (!lastFrame) {
+            resolveScenePrefetch(scene);
+        }
         auto &cache = lastFrame ? m_sceneLastFrames : m_sceneFirstFrames;
         auto it = cache.find(scene.id);
         if (it != cache.end() && it->second) {

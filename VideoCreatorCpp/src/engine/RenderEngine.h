@@ -5,6 +5,7 @@
 #include <memory>
 #include <vector>
 #include <unordered_map>
+#include <future>
 #include "model/ProjectConfig.h"
 #include "ffmpeg_utils/FFmpegHeaders.h"
 #include "ffmpeg_utils/AvFrameWrapper.h"
@@ -63,6 +64,8 @@ namespace VideoCreator
         void cacheSceneLastFrame(const SceneConfig &scene, const AVFrame *frame);
         FFmpegUtils::AvFramePtr getCachedSceneFrame(const SceneConfig &scene, bool lastFrame);
         bool ensureReusableAudioFrame(int samplesNeeded);
+        void scheduleVideoPrefetchTasks();
+        void resolveScenePrefetch(const SceneConfig &scene);
         void storeSceneFrame(std::unordered_map<int, FFmpegUtils::AvFramePtr> &cache, const SceneConfig &scene, FFmpegUtils::AvFramePtr frame);
 
         // 生成测试帧 (用于演示)
@@ -98,6 +101,7 @@ namespace VideoCreator
         std::vector<float> m_mixBufferRight;
         FFmpegUtils::AvFramePtr m_reusableMixFrame;
         int m_reusableMixFrameCapacity;
+        std::unordered_map<int, std::future<FFmpegUtils::AvFramePtr>> m_sceneFirstFramePrefetch;
     };
 
 } // namespace VideoCreator
