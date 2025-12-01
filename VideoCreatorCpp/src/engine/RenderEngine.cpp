@@ -12,6 +12,9 @@
 #include <cmath>
 #include <thread>
 #include <future>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
 
 namespace VideoCreator
 {
@@ -298,8 +301,80 @@ namespace VideoCreator
         {
             std::unique_ptr<AudioDecoder> decoder;
             std::deque<float> channels[2];
-            bool exhausted = false;
             int64_t delaySamples = 0;
+            std::mutex mutex;
+            std::condition_variable cv;
+            std::thread worker;
+            bool finished = false;
+            bool error = false;
+            std::atomic<bool> stopRequested{false};
+            std::string errorMessage;
+        };
+
+        struct AudioLayerThreadGuard
+        {
+            explicit AudioLayerThreadGuard(std::vector<std::unique_ptr<SceneAudioLayer>> &layerRefs)
+                : layers(layerRefs){}
+
+            std::vector<std::unique_ptr<SceneAudioLayer>> &layers;
+            ~AudioLayerThreadGuard()
+            {
+                stop();
+            }
+            void stop()
+            {
+                for (auto &layerPtr : layers)
+                {
+                    if (!layerPtr)
+                    {
+                        continue;
+                    }
+                    auto &layer = *layerPtr;
+                    {
+                        std::lock_guard<std::mutex> lock(layer.mutex);
+                        layer.stopRequested.store(true);
+                    }
+                    layer.cv.notify_all();
+                    if (layer.worker.joinable())
+                    {
+                        layer.worker.join();
+                    }
+                }
+            }
+        };
+
+        struct AsyncFrameQueue
+        {
+            std::mutex mutex;
+            std::condition_variable cv;
+            std::deque<FFmpegUtils::AvFramePtr> frames;
+            bool finished = false;
+            bool error = false;
+            std::atomic<bool> stopRequested{false};
+            std::string errorMessage;
+        };
+
+        struct FrameThreadGuard
+        {
+            AsyncFrameQueue &queue;
+            std::thread worker;
+            FrameThreadGuard(AsyncFrameQueue &q) : queue(q) {}
+            ~FrameThreadGuard()
+            {
+                stop();
+            }
+            void stop()
+            {
+                if (worker.joinable())
+                {
+                    {
+                        std::lock_guard<std::mutex> lock(queue.mutex);
+                        queue.stopRequested.store(true);
+                    }
+                    queue.cv.notify_all();
+                    worker.join();
+                }
+            }
         };
 
         const bool isVideoScene = scene.type == SceneType::VIDEO_SCENE;
@@ -337,11 +412,132 @@ namespace VideoCreator
             }
         }
 
-        std::vector<SceneAudioLayer> sceneAudioLayers;
+        std::vector<std::unique_ptr<SceneAudioLayer>> sceneAudioLayers;
+        AudioLayerThreadGuard audioLayerGuard(sceneAudioLayers);
         double longestAudioDuration = -1.0;
+
+        AsyncFrameQueue videoFrameQueue;
+        FrameThreadGuard videoThreadGuard(videoFrameQueue);
+        if (isVideoScene && videoSourceAvailable)
+        {
+            const size_t maxVideoQueueSize = 8;
+            videoThreadGuard.worker = std::thread([&, maxVideoQueueSize]() {
+                while (true)
+                {
+                    if (videoFrameQueue.stopRequested.load())
+                    {
+                        break;
+                    }
+                    FFmpegUtils::AvFramePtr decodedFrame;
+                    int decodeResult = videoDecoder.decodeFrame(decodedFrame);
+                    if (decodeResult > 0 && decodedFrame)
+                    {
+                        auto scaledFrame = videoDecoder.scaleFrame(decodedFrame.get(), m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P);
+                        if (!scaledFrame)
+                        {
+                            std::lock_guard<std::mutex> lock(videoFrameQueue.mutex);
+                            videoFrameQueue.error = true;
+                            videoFrameQueue.errorMessage = "Failed to scale video frame: " + videoDecoder.getErrorString();
+                            videoFrameQueue.cv.notify_all();
+                            break;
+                        }
+                        std::unique_lock<std::mutex> lock(videoFrameQueue.mutex);
+                        videoFrameQueue.cv.wait(lock, [&]() {
+                            return videoFrameQueue.stopRequested.load() || videoFrameQueue.frames.size() < maxVideoQueueSize;
+                        });
+                        if (videoFrameQueue.stopRequested.load())
+                        {
+                            break;
+                        }
+                        videoFrameQueue.frames.push_back(std::move(scaledFrame));
+                        lock.unlock();
+                        videoFrameQueue.cv.notify_all();
+                    }
+                    else if (decodeResult == 0)
+                    {
+                        std::lock_guard<std::mutex> lock(videoFrameQueue.mutex);
+                        videoFrameQueue.finished = true;
+                        videoFrameQueue.cv.notify_all();
+                        break;
+                    }
+                    else
+                    {
+                        std::lock_guard<std::mutex> lock(videoFrameQueue.mutex);
+                        videoFrameQueue.error = true;
+                        videoFrameQueue.errorMessage = "Failed to decode video frame: " + videoDecoder.getErrorString();
+                        videoFrameQueue.cv.notify_all();
+                        break;
+                    }
+                }
+            });
+        }
+
         if (m_audioStream) {
             const int targetSampleRate = (m_audioCodecContext && m_audioCodecContext->sample_rate > 0) ? m_audioCodecContext->sample_rate : 44100;
+            const size_t maxBufferedSamples = static_cast<size_t>(targetSampleRate) * 5;
+            size_t expectedLayers = 0;
+            if (!scene.resources.audio.path.empty()) {
+                expectedLayers++;
+            }
+            expectedLayers += scene.resources.audio_layers.size();
+            if (isVideoScene && scene.resources.video.use_audio && !scene.resources.video.path.empty()) {
+                expectedLayers++;
+            }
+            if (expectedLayers > 0) {
+                sceneAudioLayers.reserve(expectedLayers);
+            }
             std::vector<AudioConfig> transientAudioConfigs;
+            auto startAudioLayerWorker = [&](SceneAudioLayer &layerRef) {
+                SceneAudioLayer *layerPtr = &layerRef;
+                layerRef.worker = std::thread([layerPtr, maxBufferedSamples]() {
+                    while (true) {
+                        {
+                            std::lock_guard<std::mutex> lock(layerPtr->mutex);
+                            if (layerPtr->stopRequested.load()) {
+                                break;
+                            }
+                        }
+                        FFmpegUtils::AvFramePtr frame;
+                        int decodeResult = layerPtr->decoder->decodeFrame(frame);
+                        if (decodeResult > 0 && frame) {
+                            int channelCount = frame->ch_layout.nb_channels > 0 ? frame->ch_layout.nb_channels : 1;
+                            channelCount = std::min(channelCount, 2);
+                            std::unique_lock<std::mutex> lock(layerPtr->mutex);
+                            layerPtr->cv.wait(lock, [&]() {
+                                return layerPtr->stopRequested.load() || layerPtr->channels[0].size() < maxBufferedSamples;
+                            });
+                            if (layerPtr->stopRequested.load()) {
+                                break;
+                            }
+                            for (int ch = 0; ch < channelCount; ++ch) {
+                                float *data = reinterpret_cast<float *>(frame->data[ch]);
+                                layerPtr->channels[ch].insert(layerPtr->channels[ch].end(), data, data + frame->nb_samples);
+                            }
+                            if (channelCount == 1) {
+                                auto copyBegin = layerPtr->channels[0].end() - frame->nb_samples;
+                                layerPtr->channels[1].insert(layerPtr->channels[1].end(), copyBegin, layerPtr->channels[0].end());
+                            }
+                            size_t maxSamples = std::max(layerPtr->channels[0].size(), layerPtr->channels[1].size());
+                            layerPtr->channels[0].resize(maxSamples, 0.0f);
+                            layerPtr->channels[1].resize(maxSamples, 0.0f);
+                            lock.unlock();
+                            layerPtr->cv.notify_all();
+                        } else if (decodeResult == 0) {
+                            std::lock_guard<std::mutex> lock(layerPtr->mutex);
+                            layerPtr->finished = true;
+                            layerPtr->cv.notify_all();
+                            break;
+                        } else {
+                            std::lock_guard<std::mutex> lock(layerPtr->mutex);
+                            layerPtr->error = true;
+                            layerPtr->errorMessage = layerPtr->decoder ? layerPtr->decoder->getErrorString() : std::string("Audio decode failed");
+                            layerPtr->cv.notify_all();
+                            break;
+                        }
+                    }
+                });
+            };
+
             auto addAudioLayer = [&](const AudioConfig &audioConfig, bool applySceneEffect, bool isCritical) {
                 if (audioConfig.path.empty()) {
                     return true;
@@ -370,18 +566,20 @@ namespace VideoCreator
                     longestAudioDuration = decoderDuration;
                 }
 
-                SceneAudioLayer layer;
-                layer.decoder = std::move(decoder);
+                auto layer = std::make_unique<SceneAudioLayer>();
+                layer->decoder = std::move(decoder);
                 if (audioConfig.start_offset > 0) {
-                    layer.delaySamples = static_cast<int64_t>(std::round(audioConfig.start_offset * targetSampleRate));
+                    layer->delaySamples = static_cast<int64_t>(std::round(audioConfig.start_offset * targetSampleRate));
                 }
-                sceneAudioLayers.push_back(std::move(layer));
+                SceneAudioLayer &layerRef = *layer;
+                sceneAudioLayers.emplace_back(std::move(layer));
+                startAudioLayerWorker(layerRef);
                 return true;
             };
 
             if (!scene.resources.audio.path.empty()) {
                 if (!addAudioLayer(scene.resources.audio, true, true)) {
-                    m_errorString = u8"\u65e0\u6cd5\u521d\u59cb\u5316\u4e3b\u97f3\u9891\u6765\u6e90";
+                    m_errorString = "Failed to initialize primary audio source";
                     return false;
                 }
             }
@@ -398,7 +596,7 @@ namespace VideoCreator
                 videoAudioConfig.start_offset = 0.0;
                 bool treatAsPrimary = scene.resources.audio.path.empty() && scene.resources.audio_layers.empty();
                 if (!addAudioLayer(videoAudioConfig, treatAsPrimary, treatAsPrimary) && treatAsPrimary) {
-                    m_errorString = u8"\u65e0\u6cd5\u521d\u59cb\u5316\u89c6\u9891\u97f3\u9891";
+                    m_errorString = "Failed to initialize video audio";
                     return false;
                 }
             }
@@ -420,38 +618,6 @@ namespace VideoCreator
             return true;
         };
 
-        auto ensureLayerSamples = [&](SceneAudioLayer &layer, int neededSamples) -> bool {
-            while (!layer.exhausted && static_cast<int>(layer.channels[0].size()) < neededSamples) {
-                FFmpegUtils::AvFramePtr frame;
-                int decodeResult = layer.decoder->decodeFrame(frame);
-                if (decodeResult > 0 && frame) {
-                    int channelCount = frame->ch_layout.nb_channels > 0 ? frame->ch_layout.nb_channels : 1;
-                    channelCount = std::min(channelCount, 2);
-                    for (int ch = 0; ch < channelCount; ++ch) {
-                        float *data = reinterpret_cast<float *>(frame->data[ch]);
-                        layer.channels[ch].insert(layer.channels[ch].end(), data, data + frame->nb_samples);
-                    }
-                    if (channelCount == 1) {
-                        auto copyBegin = layer.channels[0].end() - frame->nb_samples;
-                        layer.channels[1].insert(layer.channels[1].end(), copyBegin, layer.channels[0].end());
-                    }
-                    size_t maxSamples = std::max(layer.channels[0].size(), layer.channels[1].size());
-                    layer.channels[0].resize(maxSamples, 0.0f);
-                    layer.channels[1].resize(maxSamples, 0.0f);
-                }
-                else if (decodeResult == 0) {
-                    layer.exhausted = true;
-                    break;
-                }
-                else {
-                    qDebug() << "Audio decode failed:" << layer.decoder->getErrorString().c_str();
-                    layer.exhausted = true;
-                    break;
-                }
-            }
-            return true;
-        };
-
         auto mixSceneAudio = [&](int samplesNeeded) -> bool {
             if (!m_audioStream || samplesNeeded <= 0) {
                 return true;
@@ -465,10 +631,14 @@ namespace VideoCreator
             bool hasActiveLayer = false;
             bool hasPendingAudio = false;
 
-            for (auto &layer : sceneAudioLayers) {
+            for (auto &layerPtr : sceneAudioLayers) {
+                if (!layerPtr) {
+                    continue;
+                }
+                auto &layer = *layerPtr;
                 if (layer.delaySamples >= samplesNeeded) {
                     layer.delaySamples -= samplesNeeded;
-                    if (!layer.exhausted) {
+                    if (!layer.finished) {
                         hasPendingAudio = true;
                     }
                     continue;
@@ -481,26 +651,49 @@ namespace VideoCreator
                 }
 
                 const int requiredSamples = samplesNeeded - silentSamples;
-                if (!layer.exhausted) {
-                    if (!ensureLayerSamples(layer, requiredSamples)) {
+                int consumed = 0;
+                while (consumed < requiredSamples) {
+                    std::unique_lock<std::mutex> lock(layer.mutex);
+                    layer.cv.wait(lock, [&]() {
+                        return layer.stopRequested.load() || layer.error || !layer.channels[0].empty() || layer.finished;
+                    });
+                    if (layer.error) {
+                        std::string errorCopy = layer.errorMessage;
+                        lock.unlock();
+                        m_errorString = errorCopy.empty() ? std::string("Audio decode failed") : errorCopy;
                         return false;
                     }
-                }
-
-                const int available = static_cast<int>(layer.channels[0].size());
-                const int samplesToConsume = std::min(requiredSamples, available);
-                if (samplesToConsume > 0) {
-                    hasActiveLayer = true;
-                    for (int i = 0; i < samplesToConsume; ++i) {
-                        const int dstIndex = silentSamples + i;
-                        m_mixBufferLeft[dstIndex] += layer.channels[0].front();
-                        layer.channels[0].pop_front();
-                        m_mixBufferRight[dstIndex] += layer.channels[1].front();
-                        layer.channels[1].pop_front();
+                    if (layer.channels[0].empty()) {
+                        if (layer.finished || layer.stopRequested.load()) {
+                            lock.unlock();
+                            break;
+                        }
+                        lock.unlock();
+                        continue;
                     }
+
+                    int available = static_cast<int>(layer.channels[0].size());
+                    int take = std::min(requiredSamples - consumed, available);
+                    if (take > 0) {
+                        hasActiveLayer = true;
+                        for (int i = 0; i < take; ++i) {
+                            const int dstIndex = silentSamples + consumed + i;
+                            m_mixBufferLeft[dstIndex] += layer.channels[0].front();
+                            layer.channels[0].pop_front();
+                            m_mixBufferRight[dstIndex] += layer.channels[1].front();
+                            layer.channels[1].pop_front();
+                        }
+                        consumed += take;
+                        bool bufferHasData = !layer.channels[0].empty() || !layer.channels[1].empty();
+                        if (bufferHasData || !layer.finished) {
+                            hasPendingAudio = true;
+                        }
+                    }
+                    lock.unlock();
+                    layer.cv.notify_all();
                 }
 
-                if (!layer.exhausted && (!layer.channels[0].empty() || !layer.channels[1].empty())) {
+                if (!layer.finished) {
                     hasPendingAudio = true;
                 }
             }
@@ -586,21 +779,29 @@ namespace VideoCreator
                     if (videoEOF) {
                         break;
                     }
-                    FFmpegUtils::AvFramePtr decodedFrame;
-                    int decodeResult = videoDecoder.decodeFrame(decodedFrame);
-                    if (decodeResult > 0 && decodedFrame) {
-                        videoFrame = videoDecoder.scaleFrame(decodedFrame.get(), m_config.project.width, m_config.project.height, AV_PIX_FMT_YUV420P);
-                        if (!videoFrame) {
-                            m_errorString = "缩放视频帧失败: " + videoDecoder.getErrorString();
-                            return false;
-                        }
-                    } else if (decodeResult == 0) {
-                        videoEOF = true;
-                        break;
-                    } else {
-                        m_errorString = "解码视频帧失败: " + videoDecoder.getErrorString();
+                    std::unique_lock<std::mutex> lock(videoFrameQueue.mutex);
+                    videoFrameQueue.cv.wait(lock, [&]() {
+                        return videoFrameQueue.stopRequested.load() || videoFrameQueue.error || !videoFrameQueue.frames.empty() || videoFrameQueue.finished;
+                    });
+                    if (videoFrameQueue.error) {
+                        std::string errorCopy = videoFrameQueue.errorMessage;
+                        lock.unlock();
+                        m_errorString = errorCopy.empty() ? std::string("Video frame prefetch failed") : errorCopy;
                         return false;
                     }
+                    if (videoFrameQueue.frames.empty()) {
+                        if (videoFrameQueue.finished || videoFrameQueue.stopRequested.load()) {
+                            videoEOF = true;
+                            lock.unlock();
+                            break;
+                        }
+                        lock.unlock();
+                        continue;
+                    }
+                    videoFrame = std::move(videoFrameQueue.frames.front());
+                    videoFrameQueue.frames.pop_front();
+                    lock.unlock();
+                    videoFrameQueue.cv.notify_all();
                 } else if (kenBurnsActive) {
                     if (!effectProcessor.fetchKenBurnsFrame(videoFrame)) {
                         m_errorString = "获取Ken Burns缓存帧失败: " + effectProcessor.getErrorString();
@@ -1143,7 +1344,7 @@ namespace VideoCreator
             m_sceneFirstFramePrefetch.emplace(scene.id, std::async(std::launch::async, [scene, targetWidth, targetHeight]() {
                 VideoDecoder decoder;
                 if (!decoder.open(scene.resources.video.path)) {
-                    qDebug() << "???????:" << QString::fromStdString(scene.resources.video.path)
+                    qDebug() << "Video prefetch failed:" << QString::fromStdString(scene.resources.video.path)
                              << decoder.getErrorString().c_str();
                     return FFmpegUtils::AvFramePtr{};
                 }
@@ -1155,7 +1356,7 @@ namespace VideoCreator
                     }
                     auto scaled = decoder.scaleFrame(decodedFrame.get(), targetWidth, targetHeight, AV_PIX_FMT_YUV420P);
                     if (!scaled) {
-                        qDebug() << "?????????:" << decoder.getErrorString().c_str();
+                        qDebug() << "Video frame scale failed:" << decoder.getErrorString().c_str();
                         return FFmpegUtils::AvFramePtr{};
                     }
                     return scaled;
