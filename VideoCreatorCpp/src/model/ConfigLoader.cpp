@@ -173,55 +173,92 @@ namespace VideoCreator
             scene.to_scene = json["to_scene"].toInt();
         }
 
-        // 如果JSON中没有指定duration，则根据音频时长自动计算
+        // Auto derive duration from audio/video resources when JSON omits it
         if (json.contains("duration") && json["duration"].isDouble())
         {
             scene.duration = json["duration"].toDouble();
         }
-        else if (scene.type == SceneType::IMAGE_SCENE && !scene.resources.audio.path.empty())
+        else
         {
-            // 自动从音频文件获取时长
-            double audioDuration = getAudioDuration(scene.resources.audio.path);
-            if (audioDuration > 0)
+            double audioDrivenDuration = -1.0;
+            bool hasAudioResource = false;
+            auto updateAudioDuration = [&](const std::string &path) {
+                if (path.empty())
+                {
+                    return;
+                }
+                hasAudioResource = true;
+                double audioDuration = getAudioDuration(path);
+                if (audioDuration > audioDrivenDuration)
+                {
+                    audioDrivenDuration = audioDuration;
+                }
+            };
+
+            updateAudioDuration(scene.resources.audio.path);
+            for (const auto &layerConfig : scene.resources.audio_layers)
             {
-                scene.duration = audioDuration;
-                qDebug() << "自动设置场景时长为音频时长:" << audioDuration << "秒";
+                updateAudioDuration(layerConfig.path);
             }
-            else
+
+            if (scene.type == SceneType::IMAGE_SCENE && audioDrivenDuration > 0)
             {
-                // 如果无法获取音频时长，使用默认值5秒
+                scene.duration = audioDrivenDuration;
+                qDebug() << "Scene duration synced to audio length:"
+                         << audioDrivenDuration
+                         << "seconds";
+            }
+            else if (scene.type == SceneType::VIDEO_SCENE && !scene.resources.video.path.empty())
+            {
+                double videoDuration = getVideoDuration(scene.resources.video.path);
+                if (videoDuration > 0)
+                {
+                    scene.duration = videoDuration;
+                    qDebug() << "Scene duration synced to video length:"
+                             << videoDuration
+                             << "seconds";
+                }
+                else if (audioDrivenDuration > 0)
+                {
+                    scene.duration = audioDrivenDuration;
+                    qDebug() << "Scene duration uses audio length for video scene:"
+                             << audioDrivenDuration
+                             << "seconds";
+                }
+                else
+                {
+                    scene.duration = 5.0;
+                    qDebug() << "Failed to get video duration, fallback to 5 seconds.";
+                }
+            }
+            else if (scene.type == SceneType::IMAGE_SCENE)
+            {
                 scene.duration = 5.0;
-                qDebug() << "无法获取音频时长，使用默认时长: 5秒";
+                if (hasAudioResource)
+                {
+                    qDebug() << "Failed to get audio duration, fallback to 5 seconds.";
+                }
+                else
+                {
+                    qDebug() << "Scene has no audio, fallback to 5 seconds.";
+                }
             }
-        }
-        else if (scene.type == SceneType::VIDEO_SCENE && !scene.resources.video.path.empty())
-        {
-            double videoDuration = getVideoDuration(scene.resources.video.path);
-            if (videoDuration > 0)
+            else if (scene.type == SceneType::VIDEO_SCENE)
             {
-                scene.duration = videoDuration;
-                qDebug() << "自动设置视频场景时长:" << videoDuration << "秒";
+                if (audioDrivenDuration > 0)
+                {
+                    scene.duration = audioDrivenDuration;
+                    qDebug() << "Scene duration uses audio length for video scene:"
+                             << audioDrivenDuration
+                             << "seconds";
+                }
+                else
+                {
+                    scene.duration = 5.0;
+                    qDebug() << "Video scene missing resources, fallback to 5 seconds.";
+                }
             }
-            else
-            {
-                scene.duration = 5.0;
-                qDebug() << "无法获取视频时长，使用默认时长: 5秒";
-            }
         }
-
-        else if (scene.type == SceneType::IMAGE_SCENE)
-        {
-            // 没有音频的场景，使用默认时长5秒
-            scene.duration = 5.0;
-            qDebug() << "场景没有音频，使用默认时长: 5秒";
-        }
-
-        else if (scene.type == SceneType::VIDEO_SCENE)
-        {
-            scene.duration = 5.0;
-            qDebug() << "视频场景缺少资源，使用默认时长: 5秒";
-        }
-
         return true;
     }
 
@@ -251,6 +288,25 @@ namespace VideoCreator
             if (!parseAudioConfig(json["audio"].toObject(), resources.audio))
             {
                 return false;
+            }
+        }
+
+        // Parse additional audio layers for mixing
+        if (json.contains("audio_layers") && json["audio_layers"].isArray())
+        {
+            resources.audio_layers.clear();
+            QJsonArray audioArray = json["audio_layers"].toArray();
+            for (const QJsonValue &audioValue : audioArray)
+            {
+                if (!audioValue.isObject())
+                {
+                    continue;
+                }
+                AudioConfig layerConfig;
+                if (parseAudioConfig(audioValue.toObject(), layerConfig))
+                {
+                    resources.audio_layers.push_back(layerConfig);
+                }
             }
         }
 

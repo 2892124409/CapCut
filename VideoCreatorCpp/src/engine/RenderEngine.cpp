@@ -270,6 +270,15 @@ namespace VideoCreator
 
     bool RenderEngine::renderScene(const SceneConfig &scene)
     {
+        struct SceneAudioLayer
+        {
+            std::unique_ptr<AudioDecoder> decoder;
+            std::vector<float> channels[2];
+            size_t readPos = 0;
+            bool exhausted = false;
+            int64_t delaySamples = 0;
+        };
+
         const bool isVideoScene = scene.type == SceneType::VIDEO_SCENE;
 
         ImageDecoder imageDecoder;
@@ -291,37 +300,255 @@ namespace VideoCreator
             videoSourceAvailable = true;
         }
 
-        AudioDecoder audioDecoder;
-        std::string resolvedAudioPath = scene.resources.audio.path;
-        if (resolvedAudioPath.empty() && isVideoScene && scene.resources.video.use_audio) {
-            resolvedAudioPath = scene.resources.video.path;
-        }
-        bool audioAvailable = m_audioStream && !resolvedAudioPath.empty() && audioDecoder.open(resolvedAudioPath);
-        if (m_audioStream && !resolvedAudioPath.empty() && !audioAvailable) {
-            qDebug() << "无法打开音频: " << audioDecoder.getErrorString();
+        double sceneDuration = scene.duration;
+        if (isVideoScene && videoSourceAvailable)
+        {
+            double videoDuration = videoDecoder.getDuration();
+            if (videoDuration > 0)
+            {
+                sceneDuration = videoDuration;
+                qDebug() << "Scene duration synced to video length:" << sceneDuration << "s";
+            }
         }
 
-        if (audioAvailable) {
-            if (!audioDecoder.applyVolumeEffect(scene)) {
-                m_errorString = "应用音量效果失败: " + audioDecoder.getErrorString();
+        std::vector<SceneAudioLayer> sceneAudioLayers;
+        double longestAudioDuration = -1.0;
+        if (m_audioStream) {
+            const int targetSampleRate = (m_audioCodecContext && m_audioCodecContext->sample_rate > 0) ? m_audioCodecContext->sample_rate : 44100;
+            std::vector<AudioConfig> transientAudioConfigs;
+            auto addAudioLayer = [&](const AudioConfig &audioConfig, bool applySceneEffect, bool isCritical) {
+                if (audioConfig.path.empty()) {
+                    return true;
+                }
+
+                auto decoder = std::make_unique<AudioDecoder>();
+                if (!decoder->open(audioConfig.path)) {
+                    qDebug() << "Failed to open audio:" << QString::fromStdString(audioConfig.path) << "reason:" << decoder->getErrorString().c_str();
+                    return !isCritical;
+                }
+
+                bool effectOk = false;
+                if (applySceneEffect) {
+                    effectOk = decoder->applyVolumeEffect(scene);
+                } else {
+                    effectOk = decoder->applyVolumeEffect(audioConfig.volume, nullptr, sceneDuration);
+                }
+
+                if (!effectOk) {
+                    qDebug() << "Volume effect failed:" << decoder->getErrorString().c_str();
+                    return !isCritical;
+                }
+
+                double decoderDuration = decoder->getDuration();
+                if (decoderDuration > longestAudioDuration) {
+                    longestAudioDuration = decoderDuration;
+                }
+
+                SceneAudioLayer layer;
+                layer.decoder = std::move(decoder);
+                if (audioConfig.start_offset > 0) {
+                    layer.delaySamples = static_cast<int64_t>(std::round(audioConfig.start_offset * targetSampleRate));
+                }
+                sceneAudioLayers.push_back(std::move(layer));
+                return true;
+            };
+
+            if (!scene.resources.audio.path.empty()) {
+                if (!addAudioLayer(scene.resources.audio, true, true)) {
+                    m_errorString = u8"\u65e0\u6cd5\u521d\u59cb\u5316\u4e3b\u97f3\u9891\u6765\u6e90";
+                    return false;
+                }
+            }
+
+            for (const auto &layerConfig : scene.resources.audio_layers) {
+                addAudioLayer(layerConfig, false, false);
+            }
+
+            if (isVideoScene && scene.resources.video.use_audio && !scene.resources.video.path.empty()) {
+                transientAudioConfigs.push_back(AudioConfig{});
+                auto &videoAudioConfig = transientAudioConfigs.back();
+                videoAudioConfig.path = scene.resources.video.path;
+                videoAudioConfig.volume = 1.0;
+                videoAudioConfig.start_offset = 0.0;
+                bool treatAsPrimary = scene.resources.audio.path.empty() && scene.resources.audio_layers.empty();
+                if (!addAudioLayer(videoAudioConfig, treatAsPrimary, treatAsPrimary) && treatAsPrimary) {
+                    m_errorString = u8"\u65e0\u6cd5\u521d\u59cb\u5316\u89c6\u9891\u97f3\u9891";
+                    return false;
+                }
+            }
+        }
+
+        auto enqueueSilenceFrame = [&](int requiredSamples) -> bool {
+            if (!m_audioStream || requiredSamples <= 0) {
+                return true;
+            }
+            auto audioFrame = FFmpegUtils::createAvFrame();
+            audioFrame->nb_samples = requiredSamples;
+            audioFrame->ch_layout = m_audioCodecContext->ch_layout;
+            audioFrame->format = m_audioCodecContext->sample_fmt;
+            audioFrame->sample_rate = m_audioCodecContext->sample_rate;
+            int ret = av_frame_get_buffer(audioFrame.get(), 0);
+            if (ret < 0) {
+                m_errorString = format_ffmpeg_error(ret, "Failed to allocate silence frame buffer");
                 return false;
             }
+            ret = av_frame_make_writable(audioFrame.get());
+            if (ret < 0) {
+                m_errorString = format_ffmpeg_error(ret, "Failed to make silence frame writable");
+                return false;
+            }
+            av_samples_set_silence(audioFrame->data, 0, audioFrame->nb_samples, audioFrame->ch_layout.nb_channels, (AVSampleFormat)audioFrame->format);
+            if (av_audio_fifo_write(m_audioFifo, (void **)audioFrame->data, audioFrame->nb_samples) < audioFrame->nb_samples) {
+                m_errorString = "Failed to enqueue silence frame into FIFO";
+                return false;
+            }
+            return true;
+        };
+
+        auto compactLayerBuffer = [](SceneAudioLayer &layer) {
+            const size_t threshold = 8192;
+            if (layer.readPos >= threshold) {
+                for (auto &channel : layer.channels) {
+                    if (layer.readPos < channel.size()) {
+                        channel.erase(channel.begin(), channel.begin() + static_cast<long long>(layer.readPos));
+                    } else {
+                        channel.clear();
+                    }
+                }
+                layer.readPos = 0;
+            }
+        };
+
+        auto ensureLayerSamples = [&](SceneAudioLayer &layer, int neededSamples) -> bool {
+            while (!layer.exhausted && static_cast<int>(layer.channels[0].size() - layer.readPos) < neededSamples) {
+                FFmpegUtils::AvFramePtr frame;
+                int decodeResult = layer.decoder->decodeFrame(frame);
+                if (decodeResult > 0 && frame) {
+                    int channelCount = frame->ch_layout.nb_channels > 0 ? frame->ch_layout.nb_channels : 1;
+                    channelCount = std::min(channelCount, 2);
+                    for (int ch = 0; ch < channelCount; ++ch) {
+                        float *data = reinterpret_cast<float *>(frame->data[ch]);
+                        layer.channels[ch].insert(layer.channels[ch].end(), data, data + frame->nb_samples);
+                    }
+                    if (channelCount == 1) {
+                        layer.channels[1].insert(layer.channels[1].end(), layer.channels[0].end() - frame->nb_samples, layer.channels[0].end());
+                    }
+                    size_t maxSamples = std::max(layer.channels[0].size(), layer.channels[1].size());
+                    layer.channels[0].resize(maxSamples, 0.0f);
+                    layer.channels[1].resize(maxSamples, 0.0f);
+                }
+                else if (decodeResult == 0) {
+                    layer.exhausted = true;
+                    break;
+                }
+                else {
+                    qDebug() << "Audio decode failed:" << layer.decoder->getErrorString().c_str();
+                    layer.exhausted = true;
+                    break;
+                }
+            }
+            return true;
+        };
+
+        auto mixSceneAudio = [&](int samplesNeeded) -> bool {
+            if (!m_audioStream || samplesNeeded <= 0) {
+                return true;
+            }
+            if (sceneAudioLayers.empty()) {
+                return enqueueSilenceFrame(samplesNeeded);
+            }
+
+            std::vector<float> mixLeft(samplesNeeded, 0.0f);
+            std::vector<float> mixRight(samplesNeeded, 0.0f);
+            bool hasActiveLayer = false;
+            bool hasPendingAudio = false;
+
+            for (auto &layer : sceneAudioLayers) {
+                if (layer.delaySamples >= samplesNeeded) {
+                    layer.delaySamples -= samplesNeeded;
+                    if (!layer.exhausted) {
+                        hasPendingAudio = true;
+                    }
+                    continue;
+                }
+
+                int silentSamples = 0;
+                if (layer.delaySamples > 0) {
+                    silentSamples = static_cast<int>(layer.delaySamples);
+                    layer.delaySamples = 0;
+                }
+
+                const int requiredSamples = samplesNeeded - silentSamples;
+                if (!layer.exhausted) {
+                    if (!ensureLayerSamples(layer, requiredSamples)) {
+                        return false;
+                    }
+                }
+
+                size_t available = layer.channels[0].size() > layer.readPos ? layer.channels[0].size() - layer.readPos : 0;
+                const int samplesToConsume = static_cast<int>(std::min<size_t>(available, requiredSamples));
+                if (samplesToConsume > 0) {
+                    hasActiveLayer = true;
+                    for (int i = 0; i < samplesToConsume; ++i) {
+                        const int dstIndex = silentSamples + i;
+                        mixLeft[dstIndex] += layer.channels[0][layer.readPos + i];
+                        mixRight[dstIndex] += layer.channels[1][layer.readPos + i];
+                    }
+                    layer.readPos += samplesToConsume;
+                }
+
+                if (!layer.exhausted) {
+                    hasPendingAudio = true;
+                }
+
+                compactLayerBuffer(layer);
+            }
+
+            if (!hasActiveLayer && !hasPendingAudio) {
+                return enqueueSilenceFrame(samplesNeeded);
+            }
+
+            auto mixedFrame = FFmpegUtils::createAvFrame();
+            mixedFrame->nb_samples = samplesNeeded;
+            mixedFrame->ch_layout = m_audioCodecContext->ch_layout;
+            mixedFrame->format = m_audioCodecContext->sample_fmt;
+            mixedFrame->sample_rate = m_audioCodecContext->sample_rate;
+            int ret = av_frame_get_buffer(mixedFrame.get(), 0);
+            if (ret < 0) {
+                m_errorString = format_ffmpeg_error(ret, "Failed to allocate mixed audio buffer");
+                return false;
+            }
+
+            const int outputChannels = m_audioCodecContext->ch_layout.nb_channels > 0 ? m_audioCodecContext->ch_layout.nb_channels : 2;
+            for (int ch = 0; ch < outputChannels && ch < 2; ++ch) {
+                float *dst = reinterpret_cast<float *>(mixedFrame->data[ch]);
+                const auto &source = (ch == 0) ? mixLeft : mixRight;
+                for (int i = 0; i < samplesNeeded; ++i) {
+                    float value = source[i];
+                    if (value > 1.0f) {
+                        value = 1.0f;
+                    } else if (value < -1.0f) {
+                        value = -1.0f;
+                    }
+                    dst[i] = value;
+                }
+            }
+
+            if (av_audio_fifo_write(m_audioFifo, (void **)mixedFrame->data, mixedFrame->nb_samples) < mixedFrame->nb_samples) {
+                m_errorString = "Failed to write mixed audio to FIFO";
+                return false;
+            }
+
+            return true;
+        };
+
+
+        if ((!isVideoScene || !videoSourceAvailable || sceneDuration <= 0) && !sceneAudioLayers.empty() && longestAudioDuration > 0)
+        {
+            sceneDuration = longestAudioDuration;
+            qDebug() << "Scene duration synced to audio length:" << sceneDuration << "s";
         }
 
-        double sceneDuration = scene.duration;
-        if (isVideoScene && videoSourceAvailable) {
-            double videoDuration = videoDecoder.getDuration();
-            if (videoDuration > 0) {
-                sceneDuration = videoDuration;
-                 qDebug() << "场景时长已同步到视频时长:" << sceneDuration << "秒";
-            }
-        } else if (audioAvailable) {
-            double audioDuration = audioDecoder.getDuration();
-            if (audioDuration > 0) {
-                sceneDuration = audioDuration;
-                 qDebug() << "场景时长已同步到音频时长:" << sceneDuration << "秒";
-            }
-        }
 
         int totalVideoFramesInScene = static_cast<int>(std::round(sceneDuration * m_config.project.fps));
         if (totalVideoFramesInScene <= 0) {
@@ -424,46 +651,17 @@ namespace VideoCreator
 
             } else {
                 // --- AUDIO PART ---
-                if (audioAvailable) {
-                    FFmpegUtils::AvFramePtr audioFrame;
-                    int decode_result = audioDecoder.decodeFrame(audioFrame);
-                    if (decode_result > 0 && audioFrame) {
-                        if(av_audio_fifo_write(m_audioFifo, (void **)audioFrame->data, audioFrame->nb_samples) < audioFrame->nb_samples) {
-                            m_errorString = "写入FIFO缓冲区失败";
+                if (m_audioStream) {
+                    const int frame_size = (m_audioCodecContext && m_audioCodecContext->frame_size > 0) ? m_audioCodecContext->frame_size : 1024;
+                    if (av_audio_fifo_size(m_audioFifo) < frame_size) {
+                        if (!mixSceneAudio(frame_size)) {
                             return false;
                         }
-                    } else if (decode_result == 0) {
-                        audioAvailable = false;
-                    } else {
-                        qDebug() << "音频解码失败: " << audioDecoder.getErrorString();
-                        audioAvailable = false;
                     }
-                } else if (m_audioStream) {
-                    const int frame_size = m_audioCodecContext->frame_size;
-                    if (frame_size > 0 && av_audio_fifo_size(m_audioFifo) < frame_size) {
-                        auto audioFrame = FFmpegUtils::createAvFrame();
-                        audioFrame->nb_samples = frame_size;
-                        audioFrame->ch_layout = m_audioCodecContext->ch_layout;
-                        audioFrame->format = m_audioCodecContext->sample_fmt;
-                        audioFrame->sample_rate = m_audioCodecContext->sample_rate;
-                        int ret = av_frame_get_buffer(audioFrame.get(), 0);
-                        if (ret < 0) {
-                            m_errorString = format_ffmpeg_error(ret, "为静音帧分配缓冲区失败");
-                            return false;
-                        }
-                        ret = av_frame_make_writable(audioFrame.get());
-                        if (ret < 0) {
-                            m_errorString = format_ffmpeg_error(ret, "使静音帧可写失败");
-                            return false;
-                        }
-                        av_samples_set_silence(audioFrame->data, 0, audioFrame->nb_samples, audioFrame->ch_layout.nb_channels, (AVSampleFormat)audioFrame->format);
-                        if(av_audio_fifo_write(m_audioFifo, (void**)audioFrame->data, audioFrame->nb_samples) < audioFrame->nb_samples){
-                            m_errorString = "写入静音数据到FIFO失败";
-                            return false;
-                        }
+                    if (!sendBufferedAudioFrames()) {
+                        return false;
                     }
                 }
-                if (!sendBufferedAudioFrames()) return false;
             }
         }
         return true;

@@ -6,6 +6,7 @@
 
 - **JSON驱动**: 通过 `test_config.json` 文件灵活定义视频的每一个场景和转场。
 - **音画同步**: 实现了精确的音视频同步机制，确保画面与声音完美对齐。
+- **Multi-track audio mixing**: declare extra tracks in audio_layers so narration, BGM and effects can overlap in time.
 - **动态场景时长**: 场景时长可由其关联的音频文件长度自动决定，优先于在JSON中指定的 `duration`。
 - **视频片段拼接**: 新增 `video_scene` 类型，可顺序拼接多个视频文件，并可选择复用原始音轨或覆盖独立配音。
 - **视频特效**: 支持 Ken Burns（推拉摇移）特效，可通过预设 (`preset`) 或具体坐标参数进行配置。
@@ -115,6 +116,11 @@ cmake --build .
     - 在 `video_scene` 中通过 `resources.video.path` 指定视频文件，支持可选的 `trim_start`/`trim_end`（单位秒）以及 `use_audio`。
     - 当 `use_audio` 为 `true` 且未提供 `resources.audio` 时，程序会自动提取视频自带音轨并保持与画面同步。
     - 若同时提供 `resources.audio`，则使用外部音频并可继续使用音量淡入淡出等效果。
+- **resources.audio_layers**:
+    - Each entry reuses the audio fields (path / volume / start_offset) to describe extra BGM/SFX tracks.
+    - start_offset is interpreted as a delay (seconds) relative to the beginning of the scene so every track can enter at a different moment.
+    - During rendering the engine mixes resources.audio, audio_layers and video.use_audio (if enabled); tracks that cannot be decoded are skipped but will not stop the render.
+
 
 - **`effects.ken_burns`**:
     - **`enabled`**: `true` 表示启用特效。

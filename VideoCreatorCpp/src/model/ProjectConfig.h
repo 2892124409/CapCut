@@ -72,6 +72,7 @@ namespace VideoCreator
         ImageConfig image; // 图片配置
         AudioConfig audio; // 音频配置
         VideoConfig video; // 视频配置
+        std::vector<AudioConfig> audio_layers; // Additional audio layers for mixing
     };
 
     // Ken Burns特效配置

@@ -2,6 +2,7 @@
 #include "ffmpeg_utils/AvPacketWrapper.h"
 #include <QDebug>
 #include <sstream>
+#include <cmath>
 
 namespace VideoCreator
 {
@@ -124,16 +125,25 @@ namespace VideoCreator
 
     bool AudioDecoder::applyVolumeEffect(const SceneConfig& sceneConfig)
     {
-        m_effectsEnabled = sceneConfig.effects.volume_mix.enabled || sceneConfig.resources.audio.volume != 1.0;
-        if (m_effectsEnabled) {
-            return initFilterGraph(sceneConfig);
+        double trackDuration = sceneConfig.duration > 0 ? sceneConfig.duration : getDuration();
+        const VolumeMixEffect* effect = sceneConfig.effects.volume_mix.enabled ? &sceneConfig.effects.volume_mix : nullptr;
+        return applyVolumeEffect(sceneConfig.resources.audio.volume, effect, trackDuration);
+    }
+
+    bool AudioDecoder::applyVolumeEffect(double baseVolume, const VolumeMixEffect* effect, double trackDurationSeconds)
+    {
+        const bool effectEnabled = effect && effect->enabled;
+        const bool volumeEnabled = std::abs(baseVolume - 1.0) > 1e-3;
+        m_effectsEnabled = effectEnabled || volumeEnabled;
+        if (m_effectsEnabled)
+        {
+            return initFilterGraph(baseVolume, effectEnabled ? effect : nullptr, trackDurationSeconds);
         }
         return true;
     }
 
-    bool AudioDecoder::initFilterGraph(const SceneConfig& sceneConfig)
+    bool AudioDecoder::initFilterGraph(double baseVolume, const VolumeMixEffect* effect, double trackDurationSeconds)
     {
-        // 仅清理旧的滤镜图，避免破坏已打开的解码/重采样上下文
         if (m_filterGraph) {
             avfilter_graph_free(&m_filterGraph);
             m_filterGraph = nullptr;
@@ -143,15 +153,13 @@ namespace VideoCreator
 
         m_filterGraph = avfilter_graph_alloc();
         if (!m_filterGraph) {
-            m_errorString = "无法分配 Filter Graph";
+            m_errorString = "Failed to allocate filter graph";
             return false;
         }
 
-        // 1. 定义源和汇
         const AVFilter *abuffer_src = avfilter_get_by_name("abuffer");
         const AVFilter *abuffer_sink = avfilter_get_by_name("abuffersink");
 
-        // 2. 创建源 filter 实例
         AVChannelLayout out_ch_layout;
         int64_t out_sample_rate;
         av_opt_get_chlayout(m_swrCtx, "out_chlayout", 0, &out_ch_layout);
@@ -162,47 +170,40 @@ namespace VideoCreator
              << ":sample_rate=" << out_sample_rate
              << ":sample_fmt=" << av_get_sample_fmt_name(AV_SAMPLE_FMT_FLTP)
              << ":channel_layout=" << out_ch_layout.u.mask;
-        
+
         int ret = avfilter_graph_create_filter(&m_bufferSrcCtx, abuffer_src, "in", args.str().c_str(), nullptr, m_filterGraph);
         if (ret < 0) {
-            m_errorString = "无法创建源 filter";
+            m_errorString = "Failed to create source filter";
             av_channel_layout_uninit(&out_ch_layout);
             return false;
         }
         av_channel_layout_uninit(&out_ch_layout);
 
-        // 3. 创建汇 filter 实例
         ret = avfilter_graph_create_filter(&m_bufferSinkCtx, abuffer_sink, "out", nullptr, nullptr, m_filterGraph);
         if (ret < 0) {
-            m_errorString = "无法创建汇 filter";
+            m_errorString = "Failed to create sink filter";
             return false;
         }
-        
-        // 4. 构建 filter chain 描述
+
         std::stringstream filter_spec;
-        const auto& vol_mix = sceneConfig.effects.volume_mix;
-        if (vol_mix.enabled) {
-            if (vol_mix.fade_in > 0) {
-                filter_spec << "afade=t=in:d=" << vol_mix.fade_in << ",";
+        if (effect && effect->enabled) {
+            if (effect->fade_in > 0) {
+                filter_spec << "afade=t=in:d=" << effect->fade_in << ",";
             }
-            if (vol_mix.fade_out > 0) {
-                double scene_duration = getDuration();
-                if (scene_duration > 0 && scene_duration > vol_mix.fade_out) {
-                    filter_spec << "afade=t=out:st=" << (scene_duration - vol_mix.fade_out) << ":d=" << vol_mix.fade_out << ",";
-                }
+            if (effect->fade_out > 0) {
+                double referenceDuration = trackDurationSeconds > 0 ? trackDurationSeconds : getDuration();
+                double fadeStart = referenceDuration > effect->fade_out ? (referenceDuration - effect->fade_out) : 0.0;
+                filter_spec << "afade=t=out:st=" << fadeStart << ":d=" << effect->fade_out << ",";
             }
         }
-        filter_spec << "volume=" << sceneConfig.resources.audio.volume;
+        filter_spec << "volume=" << baseVolume;
 
-        // 5. 解析并链接 filter chain
         AVFilterInOut *outputs = avfilter_inout_alloc();
         AVFilterInOut *inputs = avfilter_inout_alloc();
-        AVFilterContext *last_filter = m_bufferSrcCtx;
-
         if (!outputs || !inputs) {
-            m_errorString = "无法分配 filter inout";
-             avfilter_inout_free(&outputs);
-             avfilter_inout_free(&inputs);
+            m_errorString = "Failed to allocate filter inout";
+            avfilter_inout_free(&outputs);
+            avfilter_inout_free(&inputs);
             return false;
         }
 
@@ -215,19 +216,18 @@ namespace VideoCreator
         inputs->filter_ctx = m_bufferSinkCtx;
         inputs->pad_idx = 0;
         inputs->next = nullptr;
-        
+
         ret = avfilter_graph_parse_ptr(m_filterGraph, filter_spec.str().c_str(), &inputs, &outputs, nullptr);
         if (ret < 0) {
-            m_errorString = "无法解析 filter chain";
+            m_errorString = "Failed to parse filter chain";
             avfilter_inout_free(&outputs);
             avfilter_inout_free(&inputs);
             return false;
         }
 
-        // 6. 验证并提交配置
         ret = avfilter_graph_config(m_filterGraph, nullptr);
         if (ret < 0) {
-            m_errorString = "无法配置 filter graph";
+            m_errorString = "Failed to configure filter graph";
             return false;
         }
 

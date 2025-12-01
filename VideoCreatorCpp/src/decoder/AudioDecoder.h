@@ -22,6 +22,7 @@ namespace VideoCreator
 
         // 应用音量效果
         bool applyVolumeEffect(const SceneConfig& sceneConfig);
+        bool applyVolumeEffect(double baseVolume, const VolumeMixEffect* effect, double trackDurationSeconds);
 
         // 尝试解码下一帧音频，重采样并应用效果后返回
         // 返回值: >0 表示成功, 0 表示文件结束(EOF), <0 表示错误
@@ -44,7 +45,7 @@ namespace VideoCreator
 
     private:
         // 初始化Filter Graph
-        bool initFilterGraph(const SceneConfig& sceneConfig);
+        bool initFilterGraph(double baseVolume, const VolumeMixEffect* effect, double trackDurationSeconds);
 
         // FFmpeg资源
         AVFormatContext *m_formatContext;

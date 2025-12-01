@@ -122,12 +122,15 @@
             "resources": {
                 "video": {
                     "path": "d:/CapCut/VideoCreatorCpp/assets/clip_outro.mp4",
-                    "use_audio": false
+                    "use_audio": true
                 },
-                "audio": {
-                    "path": "d:/CapCut/VideoCreatorCpp/assets/narration2.mp3",
-                    "volume": 0.8
-                }
+                "audio_layers": [
+                    {
+                        "path": "d:/CapCut/VideoCreatorCpp/assets/narration2.mp3",
+                        "volume": 0.8,
+                        "start_offset": 0.0
+                    }
+                ]
             }
         }
     ]
