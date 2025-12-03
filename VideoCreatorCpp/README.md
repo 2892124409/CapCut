@@ -137,6 +137,32 @@ cmake --build .
 - 构建完成后，将 `test_config.json` 和 `assets/` 内容复制到可执行文件同目录（CMake 已尝试自动复制）。
 - 运行程序并观察控制台日志，若遇到 FFmpeg 相关错误，可查看错误输出并确保 `3rdparty/ffmpeg/bin` 下的 DLL 可用或链接正确的静态库。
 
+## 作为库集成（按钮触发，单次渲染）
+
+- 构建会生成静态库 `VideoCreatorCore`，在主项目中链接即可。
+- 头文件：`src/VideoCreatorAPI.h`，接口：
+  - `bool RenderFromJson(const std::string& config_path, std::string* error = nullptr);`
+  - `bool RenderFromJsonString(const std::string& json_string, std::string* error = nullptr);`
+- 使用示例：
+
+```cpp
+#include "VideoCreatorAPI.h"
+#include <iostream>
+
+int main() {
+    std::string err;
+    if (!VideoCreator::RenderFromJson("/tmp/job/config.json", &err)) {
+        std::cerr << "Render failed: " << err << std::endl;
+        return 1;
+    }
+    std::cout << "Render succeeded" << std::endl;
+    return 0;
+}
+```
+
+- JSON 结构与 `test_config.json` 相同，`project.output_path` 决定输出位置。
+- 运行前确保 FFmpeg/QtCore 依赖可用，输出目录可写；本方案不含进度/取消。
+
 ## 许可证
 
 MIT License

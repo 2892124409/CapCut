@@ -25,9 +25,8 @@ find_package(Qt6 REQUIRED COMPONENTS Core)
 set(FFMPEG_DIR "${CMAKE_SOURCE_DIR}/../3rdparty/ffmpeg")
 include_directories(${FFMPEG_DIR}/include)
 
-# 添加可执行文件
-qt_add_executable(VideoCreatorCpp
-    src/main.cpp
+# 核心库源文件
+set(VIDEOCREATOR_CORE_SOURCES
     src/model/ConfigLoader.cpp
     src/model/ConfigLoader.h
     src/model/ProjectConfig.h
@@ -44,10 +43,15 @@ qt_add_executable(VideoCreatorCpp
     src/ffmpeg_utils/AvFrameWrapper.h
     src/ffmpeg_utils/AvPacketWrapper.h
     src/ffmpeg_utils/FFmpegHeaders.h
+    src/VideoCreatorAPI.cpp
+    src/VideoCreatorAPI.h
 )
 
+# 核心库（供外部直接调用）
+add_library(VideoCreatorCore STATIC ${VIDEOCREATOR_CORE_SOURCES})
+
 # 链接依赖库
-target_link_libraries(VideoCreatorCpp PRIVATE
+target_link_libraries(VideoCreatorCore PUBLIC
     Qt6::Core
     ${FFMPEG_DIR}/lib/avcodec.lib
     ${FFMPEG_DIR}/lib/avformat.lib
@@ -58,7 +62,7 @@ target_link_libraries(VideoCreatorCpp PRIVATE
 )
 
 # 包含目录
-target_include_directories(VideoCreatorCpp PRIVATE
+target_include_directories(VideoCreatorCore PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/src/model
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ffmpeg_utils
@@ -67,6 +71,16 @@ target_include_directories(VideoCreatorCpp PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/filter
     ${CMAKE_CURRENT_SOURCE_DIR}/src/common
 )
+
+# 示例可执行程序
+qt_add_executable(VideoCreatorCpp
+    src/main.cpp
+)
+
+target_link_libraries(VideoCreatorCpp PRIVATE VideoCreatorCore)
+
+# 包含目录（仅可执行需要的额外定义）
+target_include_directories(VideoCreatorCpp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # 向C++代码传递源码目录路径，以便直接读取配置文件
 file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}" PROJECT_SOURCE_DIR_CMAKE)
