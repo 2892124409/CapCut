@@ -9,6 +9,7 @@
 #include <QTimer>
 #include <QElapsedTimer>
 #include <QString>
+#include <QByteArray>
 #include <atomic>
 
 /**
@@ -25,6 +26,7 @@ public:
 
     // IMediaPlayer 接口实现
     bool load(const QString &filePath) override;
+    bool loadFromData(const QByteArray &data, const QString &formatHint = QString()) override;
     void play() override;
     void pause() override;
     void stop() override;
@@ -83,6 +85,9 @@ private:
     qint64 m_lastFramePts = 0;
     std::atomic<qint64> m_pendingSeek{-1};
     std::atomic<bool> m_reloadPending{false};
+    // 内存数据源（可选）：当使用 loadFromData 时保存一份拷贝，便于必要时重新加载
+    bool m_usingMemorySource = false;
+    QByteArray m_currentMemoryData;
 };
 
 #endif // VIDEOPLAYER_IMPL_H

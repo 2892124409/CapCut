@@ -7,10 +7,12 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QDebug>
+#include <QtQml/qqml.h>
 
 class FileManager : public QObject
 {
     Q_OBJECT
+    QML_ELEMENT
 
     Q_PROPERTY(QString currentFile READ currentFile NOTIFY currentFileChanged)
     Q_PROPERTY(QString currentFolder READ currentFolder NOTIFY currentFolderChanged)

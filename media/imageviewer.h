@@ -11,6 +11,7 @@ public:
     ~ImageViewer() override = default;
 
     bool load(const QString &filePath) override;
+    bool loadFromData(const QByteArray &data, const QString &formatHint = QString()) override;
     void play() override {}
     void pause() override {}
     void stop() override {}

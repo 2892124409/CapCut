@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QString>
 #include <QImage>
+#include <QByteArray>
 
 /**
  * @brief 媒体播放器统一接口
@@ -18,8 +19,15 @@ public:
     explicit IMediaPlayer(QObject *parent = nullptr) : QObject(parent) {}
     virtual ~IMediaPlayer() = default;
 
-    // === 媒体控制接口 ===
+    // === 媒体控制接口（基于文件路径） ===
     virtual bool load(const QString &filePath) = 0;
+    // === 媒体控制接口（基于内存数据） ===
+    // 默认返回 false，实际播放器可选择实现
+    virtual bool loadFromData(const QByteArray &data, const QString &formatHint = QString()) {
+        Q_UNUSED(data);
+        Q_UNUSED(formatHint);
+        return false;
+    }
     virtual void play() = 0;
     virtual void pause() = 0;
     virtual void stop() = 0;

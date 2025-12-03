@@ -14,6 +14,7 @@ public:
     ~AudioPlayer() override;
 
     bool load(const QString &filePath) override;
+    bool loadFromData(const QByteArray &data, const QString &formatHint = QString()) override;
     void play() override;
     void pause() override;
     void stop() override;
@@ -40,6 +41,8 @@ private:
     QTimer *m_timer = nullptr;
     Demuxer *m_demuxer = nullptr;
     AudioDecoder *m_audioDecoder = nullptr;
+    bool m_usingMemorySource = false;
+    QByteArray m_currentMemoryData;
 
     std::atomic<qint64> m_totalDuration{0};
     std::atomic<qint64> m_currentPosition{0};

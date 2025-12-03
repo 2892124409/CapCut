@@ -6,6 +6,7 @@
 #include <QString>
 #include <QQuickFramebufferObject>
 #include <QReadWriteLock>
+#include <QByteArray>
 #include <atomic>
 
 class MediaRenderer;
@@ -37,6 +38,10 @@ public:
 
     // === 供 QML 调用的统一接口 ===
     Q_INVOKABLE bool loadMedia(const QString &filePath);
+    // 从内存数据加载媒体（通常由 C++ 调用；formatHint 可用于图片格式提示）
+    Q_INVOKABLE bool loadVideoFromMemory(const QByteArray &data, const QString &formatHint = QString());
+    Q_INVOKABLE bool loadAudioFromMemory(const QByteArray &data, const QString &formatHint = QString());
+    Q_INVOKABLE bool loadImageFromMemory(const QByteArray &data, const QString &formatHint = QString());
     Q_INVOKABLE void play();
     Q_INVOKABLE void pause();
     Q_INVOKABLE void stop();

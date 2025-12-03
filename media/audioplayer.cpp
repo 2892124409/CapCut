@@ -15,6 +15,9 @@ AudioPlayer::~AudioPlayer()
 
 bool AudioPlayer::load(const QString &filePath)
 {
+    m_usingMemorySource = false;
+    m_currentMemoryData.clear();
+
     cleanup();
 
     m_demuxer = new Demuxer(this);
@@ -23,6 +26,28 @@ bool AudioPlayer::load(const QString &filePath)
     connect(m_demuxer, &Demuxer::failedToOpen, this, &AudioPlayer::onDemuxerFailedToOpen);
 
     m_demuxer->setFilePath(filePath);
+    m_demuxer->start();
+
+    m_isStopped.store(false);
+    emit stoppedStateChanged(false);
+    return true;
+}
+
+bool AudioPlayer::loadFromData(const QByteArray &data, const QString &formatHint)
+{
+    Q_UNUSED(formatHint);
+
+    m_usingMemorySource = true;
+    m_currentMemoryData = data;
+
+    cleanup();
+
+    m_demuxer = new Demuxer(this);
+    connect(m_demuxer, &Demuxer::opened, this, &AudioPlayer::onDemuxerOpened);
+    connect(m_demuxer, &Demuxer::endOfFile, this, &AudioPlayer::onDemuxerEndOfFile);
+    connect(m_demuxer, &Demuxer::failedToOpen, this, &AudioPlayer::onDemuxerFailedToOpen);
+
+    m_demuxer->setMemoryBuffer(m_currentMemoryData);
     m_demuxer->start();
 
     m_isStopped.store(false);

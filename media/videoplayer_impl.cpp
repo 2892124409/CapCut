@@ -16,6 +16,9 @@ VideoPlayerImpl::~VideoPlayerImpl()
 
 bool VideoPlayerImpl::load(const QString &filePath)
 {
+    m_usingMemorySource = false;
+    m_currentMemoryData.clear();
+
     bool keepStartPaused = m_startPausedOnOpen;
     qint64 keepReloadTarget = m_reloadTarget.load();
     bool keepReloadPending = m_reloadPending.load();
@@ -44,6 +47,47 @@ bool VideoPlayerImpl::load(const QString &filePath)
 
     m_demuxer->setFilePath(filePath);
     m_demuxer->start(); // Start the demuxer thread, which will perform the actual open
+
+    m_isStopped.store(false);
+    emit stoppedStateChanged(false);
+    return true;
+}
+
+bool VideoPlayerImpl::loadFromData(const QByteArray &data, const QString &formatHint)
+{
+    Q_UNUSED(formatHint);
+
+    m_usingMemorySource = true;
+    m_currentMemoryData = data;
+    m_currentFilePath.clear();
+
+    bool keepStartPaused = m_startPausedOnOpen;
+    qint64 keepReloadTarget = m_reloadTarget.load();
+    bool keepReloadPending = m_reloadPending.load();
+    qint64 keepPendingSeek = m_pendingSeek.load();
+    bool suppressResetSignals = keepReloadPending;
+    cleanup(!suppressResetSignals);
+    m_startPausedOnOpen = keepStartPaused;
+    m_reloadTarget.store(keepReloadPending ? keepReloadTarget : -1);
+    m_reloadPending.store(keepReloadPending);
+    m_pendingSeek.store(keepReloadPending ? keepPendingSeek : -1);
+
+    // 创建并启动 Demuxer（内存数据源）
+    m_audioClockTimer.invalidate();
+    m_reachedEof = false;
+    m_lastFramePts = 0;
+    m_pendingSeek.store(-1);
+    m_seekTargetMs.store(-1);
+    m_audioClockMs.store(-1);
+    m_seekGraceActive = false;
+    m_seekTimer.invalidate();
+    m_demuxer = new Demuxer(this);
+    connect(m_demuxer, &Demuxer::opened, this, &VideoPlayerImpl::onDemuxerOpened);
+    connect(m_demuxer, &Demuxer::endOfFile, this, &VideoPlayerImpl::onDemuxerEndOfFile);
+    connect(m_demuxer, &Demuxer::failedToOpen, this, &VideoPlayerImpl::onDemuxerFailedToOpen);
+
+    m_demuxer->setMemoryBuffer(m_currentMemoryData);
+    m_demuxer->start();
 
     m_isStopped.store(false);
     emit stoppedStateChanged(false);
@@ -101,18 +145,32 @@ void VideoPlayerImpl::seek(qint64 position)
 {
     qDebug() << "VP::seek request pos" << position << "eof?" << m_reachedEof
              << "demuxer running?" << (m_demuxer && m_demuxer->isRunning())
-             << "wasPlaying?" << isPlaying();
+             << "wasPlaying?" << isPlaying()
+             << "usingMemorySource?" << m_usingMemorySource;
     if (!m_demuxer || !m_demuxer->isRunning() || m_reachedEof) {
-        if (m_currentFilePath.isEmpty())
+        if (m_usingMemorySource) {
+            if (m_currentMemoryData.isEmpty())
+                return;
+            m_pendingSeek.store(position);
+            m_reloadPending.store(true);
+            m_reloadTarget.store(position);
+            m_seekTargetMs.store(position);
+            m_seekGraceActive = true;
+            m_startPausedOnOpen = true; // 用户拖动后由他决定何时播放
+            loadFromData(m_currentMemoryData);
             return;
-        m_pendingSeek.store(position);
-        m_reloadPending.store(true);
-        m_reloadTarget.store(position);
-        m_seekTargetMs.store(position);
-        m_seekGraceActive = true;
-        m_startPausedOnOpen = true; // 用户拖动后由他决定何时播放
-        load(m_currentFilePath);
-        return;
+        } else {
+            if (m_currentFilePath.isEmpty())
+                return;
+            m_pendingSeek.store(position);
+            m_reloadPending.store(true);
+            m_reloadTarget.store(position);
+            m_seekTargetMs.store(position);
+            m_seekGraceActive = true;
+            m_startPausedOnOpen = true; // 用户拖动后由他决定何时播放
+            load(m_currentFilePath);
+            return;
+        }
     }
 
     const bool wasPlaying = isPlaying();

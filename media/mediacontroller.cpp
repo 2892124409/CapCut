@@ -9,6 +9,7 @@
 #include <QOpenGLFunctions>
 #include <QOpenGLVertexArrayObject>
 #include <QOpenGLBuffer>
+#include <QQuickWindow>
 #include <algorithm>
 
 // 基础的顶点/片元着色器，绘制一张满屏矩形
@@ -51,7 +52,15 @@ public:
     }
 
     void synchronize(QQuickFramebufferObject *item) override {
-        m_viewport = item->size().toSize();
+        qreal dpr = 1.0;
+        if (m_controller && m_controller->window()) {
+            dpr = m_controller->window()->effectiveDevicePixelRatio();
+        }
+        QSizeF logicalSize = item->size();
+        m_viewport = (logicalSize * dpr).toSize();
+        if (!m_viewport.isValid()) {
+            m_viewport = logicalSize.toSize();
+        }
         if (m_controller) {
             QImage frame;
             if (m_controller->takeFrame(frame)) {
@@ -285,6 +294,92 @@ bool MediaController::loadMedia(const QString &filePath)
         cleanupCurrentPlayer();
     }
     
+    return success;
+}
+
+bool MediaController::loadVideoFromMemory(const QByteArray &data, const QString &formatHint)
+{
+    cleanupCurrentPlayer();
+
+    m_currentPlayer = new VideoPlayerImpl(this);
+    if (!m_currentPlayer) {
+        emit errorOccurred(QStringLiteral("无法创建视频播放器"));
+        return false;
+    }
+
+    connect(m_currentPlayer, &IMediaPlayer::frameChanged, this, &MediaController::onFrameChanged);
+    connect(m_currentPlayer, &IMediaPlayer::durationChanged, this, &MediaController::onDurationChanged);
+    connect(m_currentPlayer, &IMediaPlayer::positionChanged, this, &MediaController::onPositionChanged);
+    connect(m_currentPlayer, &IMediaPlayer::playingStateChanged, this, &MediaController::onPlayingStateChanged);
+    connect(m_currentPlayer, &IMediaPlayer::pausedStateChanged, this, &MediaController::onPausedStateChanged);
+    connect(m_currentPlayer, &IMediaPlayer::stoppedStateChanged, this, &MediaController::onStoppedStateChanged);
+    connect(m_currentPlayer, &IMediaPlayer::mediaEnded, this, &MediaController::onMediaEnded);
+    connect(m_currentPlayer, &IMediaPlayer::errorOccurred, this, &MediaController::onErrorOccurred);
+
+    bool success = m_currentPlayer->loadFromData(data, formatHint);
+    if (!success) {
+        emit errorOccurred(QStringLiteral("从内存加载视频失败"));
+        cleanupCurrentPlayer();
+    }
+
+    return success;
+}
+
+bool MediaController::loadAudioFromMemory(const QByteArray &data, const QString &formatHint)
+{
+    Q_UNUSED(formatHint);
+
+    cleanupCurrentPlayer();
+
+    m_currentPlayer = new AudioPlayer(this);
+    if (!m_currentPlayer) {
+        emit errorOccurred(QStringLiteral("无法创建音频播放器"));
+        return false;
+    }
+
+    connect(m_currentPlayer, &IMediaPlayer::frameChanged, this, &MediaController::onFrameChanged);
+    connect(m_currentPlayer, &IMediaPlayer::durationChanged, this, &MediaController::onDurationChanged);
+    connect(m_currentPlayer, &IMediaPlayer::positionChanged, this, &MediaController::onPositionChanged);
+    connect(m_currentPlayer, &IMediaPlayer::playingStateChanged, this, &MediaController::onPlayingStateChanged);
+    connect(m_currentPlayer, &IMediaPlayer::pausedStateChanged, this, &MediaController::onPausedStateChanged);
+    connect(m_currentPlayer, &IMediaPlayer::stoppedStateChanged, this, &MediaController::onStoppedStateChanged);
+    connect(m_currentPlayer, &IMediaPlayer::mediaEnded, this, &MediaController::onMediaEnded);
+    connect(m_currentPlayer, &IMediaPlayer::errorOccurred, this, &MediaController::onErrorOccurred);
+
+    bool success = m_currentPlayer->loadFromData(data, QString());
+    if (!success) {
+        emit errorOccurred(QStringLiteral("从内存加载音频失败"));
+        cleanupCurrentPlayer();
+    }
+
+    return success;
+}
+
+bool MediaController::loadImageFromMemory(const QByteArray &data, const QString &formatHint)
+{
+    cleanupCurrentPlayer();
+
+    m_currentPlayer = new ImageViewer(this);
+    if (!m_currentPlayer) {
+        emit errorOccurred(QStringLiteral("无法创建图片查看器"));
+        return false;
+    }
+
+    connect(m_currentPlayer, &IMediaPlayer::frameChanged, this, &MediaController::onFrameChanged);
+    connect(m_currentPlayer, &IMediaPlayer::durationChanged, this, &MediaController::onDurationChanged);
+    connect(m_currentPlayer, &IMediaPlayer::positionChanged, this, &MediaController::onPositionChanged);
+    connect(m_currentPlayer, &IMediaPlayer::playingStateChanged, this, &MediaController::onPlayingStateChanged);
+    connect(m_currentPlayer, &IMediaPlayer::pausedStateChanged, this, &MediaController::onPausedStateChanged);
+    connect(m_currentPlayer, &IMediaPlayer::stoppedStateChanged, this, &MediaController::onStoppedStateChanged);
+    connect(m_currentPlayer, &IMediaPlayer::mediaEnded, this, &MediaController::onMediaEnded);
+    connect(m_currentPlayer, &IMediaPlayer::errorOccurred, this, &MediaController::onErrorOccurred);
+
+    bool success = m_currentPlayer->loadFromData(data, formatHint);
+    if (!success) {
+        emit errorOccurred(QStringLiteral("从内存加载图片失败"));
+        cleanupCurrentPlayer();
+    }
+
     return success;
 }
 

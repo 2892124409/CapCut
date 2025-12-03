@@ -6,6 +6,7 @@
 #include <QString>
 #include <QThread>
 #include <QWaitCondition>
+#include <QByteArray>
 #include <atomic>
 
 
@@ -18,10 +19,26 @@ class Demuxer : public QThread {
   Q_OBJECT
 
 public:
+  // 内存缓冲区上下文结构体，供自定义 AVIO 使用
+  struct MemoryBufferContext {
+    const uint8_t *data = nullptr;
+    int64_t size = 0;
+    int64_t pos = 0;
+  };
+
+  enum class SourceType {
+    None,
+    File,
+    Memory
+  };
+
   explicit Demuxer(QObject *parent = nullptr);
   ~Demuxer() override;
 
+  // 设置磁盘/URL 文件路径作为数据源
   void setFilePath(const QString &filePath);
+  // 设置内存缓冲区作为数据源（需要完整文件数据）
+  void setMemoryBuffer(const QByteArray &buffer);
 
   // 获取流信息
   int videoStreamIndex() const { return m_videoStreamIndex; }
@@ -52,12 +69,17 @@ protected:
   void run() override;
 
 private:
+
   // FFmpeg 相关
   AVFormatContext *m_formatCtx = nullptr;
+  AVIOContext *m_avioCtx = nullptr;
+  MemoryBufferContext m_memCtx;
+  SourceType m_sourceType = SourceType::None;
   int m_videoStreamIndex = -1;
   int m_audioStreamIndex = -1;
   qint64 m_duration = 0;
-  QString m_filePath; // NEW: Member to store the file path
+  QString m_filePath;          // 文件路径数据源
+  QByteArray m_memoryBuffer;   // 内存数据源
 
   // 数据包队列
   QQueue<AVPacket *> m_audioQueue;

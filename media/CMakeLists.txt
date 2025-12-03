@@ -4,79 +4,80 @@ project(media VERSION 0.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# ==========================================
+# 1. 查找 Qt 模块
+# ==========================================
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick Multimedia OpenGL)
+
+qt_standard_project_setup(REQUIRES 6.5)
 
 # ==========================================
-# 1. 查找 Qt 模块 (关键修正：加上 Multimedia)
-# ==========================================
-find_package(Qt6 REQUIRED COMPONENTS Quick)
-find_package(Qt6 REQUIRED COMPONENTS Core)
-find_package(Qt6 REQUIRED COMPONENTS Multimedia) # <--- 之前报错就是因为缺了这行！
-find_package(Qt6 REQUIRED COMPONENTS OpenGL)
-
-qt_standard_project_setup(REQUIRES 6.5) # 建议稍微降低一点版本要求以兼容旧环境，或者保持 6.8
-
-qt_add_executable(appmedia
-    main.cpp
-)
-
-# ==========================================
-# 2. 定义 QML 模块和 C++ 源文件
-# ==========================================
-qt_add_qml_module(appmedia
-    URI media
-    VERSION 1.0
-    QML_FILES
-    Main.qml
-    SOURCES
-    # 原有文件
-    audiodecoder.h
-    audiodecoder.cpp
-    videodecoder.h
-    videodecoder.cpp
-    demuxer.h
-    demuxer.cpp
-    ffmpeg_resource_manager.h
-    filemanager.h
-    filemanager.cpp
-    
-    # 重构新增文件
-    imediaplayer.h
-    mediacontroller.h
-    mediacontroller.cpp
-    videoplayer_impl.h
-    videoplayer_impl.cpp
-    audioplayer.h
-    audioplayer.cpp
-    imageviewer.h
-    imageviewer.cpp
-)
-
-# ==========================================
-# 3. FFmpeg 路径配置
+# 2. FFmpeg 路径配置
 # ==========================================
 set(FFMPEG_DIR "${CMAKE_SOURCE_DIR}/../3rdparty/ffmpeg")
 include_directories(${FFMPEG_DIR}/include)
 
+set(MEDIA_CORE_SOURCES
+    audiodecoder.cpp
+    audioplayer.cpp
+    demuxer.cpp
+    filemanager.cpp
+    imageviewer.cpp
+    mediacontroller.cpp
+    mediacontroller.h
+    videodecoder.cpp
+    videoplayer_impl.cpp
+    audiodecoder.h
+    audioplayer.h
+    demuxer.h
+    ffmpeg_resource_manager.h
+    filemanager.h
+    imageviewer.h
+    imediaplayer.h
+    videodecoder.h
+    videoplayer_impl.h
+)
+
 # ==========================================
-# 4. 链接所有库 (Qt + FFmpeg)
+# 3. media_core 库（供测试程序和宿主项目复用）
 # ==========================================
-# 注意：如果你用的是 MinGW 且 lib 文件夹里是 .dll.a 结尾的文件，
-# 请把下面的 .lib 后缀改为 .dll.a
-target_link_libraries(appmedia PRIVATE
+qt_add_library(media_core STATIC)
+target_sources(media_core PRIVATE ${MEDIA_CORE_SOURCES})
+target_include_directories(media_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(media_core PUBLIC
+    Qt6::Core
+    Qt6::Gui
     Qt6::Quick
     Qt6::Multimedia
     Qt6::OpenGL
-
-    # FFmpeg 库
     ${FFMPEG_DIR}/lib/avcodec.lib
     ${FFMPEG_DIR}/lib/avformat.lib
     ${FFMPEG_DIR}/lib/avutil.lib
     ${FFMPEG_DIR}/lib/swscale.lib
-    ${FFMPEG_DIR}/lib/swresample.lib # 音频重采样库
+    ${FFMPEG_DIR}/lib/swresample.lib
 )
 
 # ==========================================
-# 性能优化编译选项
+# 4. 将 QML 资源打包到 media_core 模块
+# ==========================================
+qt_add_qml_module(media_core
+    URI media
+    VERSION 1.0
+    QML_FILES
+        Main.qml
+        MediaView.qml
+)
+
+# ==========================================
+# 5. 测试可执行程序（继续加载模块中的 Main.qml）
+# ==========================================
+qt_add_executable(appmedia
+    main.cpp
+)
+target_link_libraries(appmedia PRIVATE media_core Qt6::Quick)
+
+# ==========================================
+# 6. 性能优化编译选项
 # ==========================================
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
     target_compile_options(appmedia PRIVATE 
@@ -96,7 +97,7 @@ else()
 endif()
 
 # ==========================================
-# 5. 系统相关配置 (保持不变)
+# 7. 系统相关配置
 # ==========================================
 set_target_properties(appmedia PROPERTIES
     MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
