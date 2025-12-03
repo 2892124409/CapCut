@@ -517,6 +517,53 @@ Item {
 - 调用 `MediaController::loadVideoFromMemory` / `loadImageFromMemory` 等函数。
 - 在必要时决定何时重新加载或切换媒体内容。
 
+### 3.4 纯后台 C++ API（无 UI/QML）
+
+- 文件：`media_api.h/.cpp`，不依赖 QML/Quick，直接复用底层解码/播放链路。
+- 需要已有 `QCoreApplication`/`QGuiApplication` 事件循环（内部使用 QTimer/线程）。
+- CMake 引入：`target_link_libraries(your_app PRIVATE media_core Qt6::Core Qt6::Multimedia)`。
+
+**最简播放示例**
+
+```cpp
+#include <QCoreApplication>
+#include "media_api.h"
+
+int main(int argc, char *argv[])
+{
+    QCoreApplication app(argc, argv);
+
+    MediaAPI player;
+    player.setErrorCallback([](const QString &err) { qWarning() << "media error:" << err; });
+    player.setEndedCallback([] { qInfo() << "media ended"; });
+
+    std::string err;
+    if (!player.loadFromPath("D:/Videos/demo.mp4", &err)) {
+        qWarning() << "load failed:" << QString::fromStdString(err);
+        return 1;
+    }
+
+    player.play();
+    return app.exec(); // 事件循环驱动解码/定时器
+}
+```
+
+**从内存播放（视频/音频/图片）**
+
+```cpp
+QByteArray data = ...; // 完整文件数据
+MediaAPI player;
+player.setFrameCallback([](const QImage &frame) {
+    // 可在此上传纹理、做统计等
+});
+
+player.loadVideoFromMemory(data);   // 或 loadAudioFromMemory / loadImageFromMemory
+player.play();
+```
+
+- 可选回调：错误（`setErrorCallback`）、帧（`setFrameCallback`）、位置（`setPositionCallback`）、状态（`setStateCallback`）、播放结束（`setEndedCallback`）。
+- 控制接口：`play/pause/stop/seek/setVolume`，查询：`duration/position/isPlaying/isPaused/isStopped/currentFrame/lastError`。
+
 ---
 
 ## 4. 功能一览与示例代码

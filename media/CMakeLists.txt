@@ -23,6 +23,7 @@ set(MEDIA_CORE_SOURCES
     demuxer.cpp
     filemanager.cpp
     imageviewer.cpp
+    media_api.cpp
     mediacontroller.cpp
     mediacontroller.h
     videodecoder.cpp
@@ -34,6 +35,7 @@ set(MEDIA_CORE_SOURCES
     filemanager.h
     imageviewer.h
     imediaplayer.h
+    media_api.h
     videodecoder.h
     videoplayer_impl.h
 )
